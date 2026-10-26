@@ -11,6 +11,7 @@ import {
 } from "../core/graph-deletion.ts";
 import { extractionStatuses } from "../agent/subagents/extraction.ts";
 import { stores } from "./stores.ts";
+import { deriveHeldOverlay } from "../core/held.ts";
 import { callCost } from "./pricing.ts";
 
 /**
@@ -20,7 +21,9 @@ import { callCost } from "./pricing.ts";
  * reflects whatever the pipeline has merged so far.
  */
 export function graphView(): GraphSnapshot {
-	return graphSnapshot(stores);
+	const snap = graphSnapshot(stores);
+	const held = deriveHeldOverlay(stores.heldStore.read(), snap.propositions, stores.graphStore.readSources());
+	return { ...snap, held };
 }
 
 /** The graph view's cost surface (GET /api/graph/costs — the 2026-09 cost

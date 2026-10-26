@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CornerDownLeftIcon, DumbbellIcon } from "lucide-react";
+import { CornerDownLeftIcon, DumbbellIcon, HistoryIcon } from "lucide-react";
 import { GraphView } from "@/components/graph-view";
 import { MinimalHome } from "@/components/minimal-home";
 import { SetupDialog } from "@/components/setup-dialog";
@@ -63,6 +63,7 @@ export function Home({
 		},
 	});
 	const [busy, setBusy] = useState(false);
+	const [reviewing, setReviewing] = useState(false);
 	/* Run end focuses the topic input (owner, 2026-10-01): the hands are on
 	 * the keyboard from the stop. Falling edge only; this surface's only
 	 * dictation target IS this textarea, so no case-split is needed. */
@@ -103,6 +104,26 @@ export function Home({
 	 * the run, let the last finals land, THEN read the REF mirror (not the
 	 * state closure) and run. Applies before the setup/key guards too, so
 	 * an intercepted draft is the complete one. */
+	const reviewRecentWork = async () => {
+		if (reviewing) return;
+		setReviewing(true);
+		try {
+			const res = await fetch("/api/cursor/recent?days=7");
+			const data = (await res.json()) as { goal?: string };
+			const goal = (data.goal ?? "").trim() || "Review my recent Cursor work.";
+			topicRef.current = goal;
+			setTopic(goal);
+			topicInputRef.current?.focus();
+		} catch {
+			const fallback = "Review my recent Cursor work.";
+			topicRef.current = fallback;
+			setTopic(fallback);
+			topicInputRef.current?.focus();
+		} finally {
+			setReviewing(false);
+		}
+	};
+
 	const start = () => {
 		if (!dictation.active) {
 			void begin();
@@ -219,12 +240,26 @@ export function Home({
 					    shows the pick HINT so the affordance is discoverable;
 					    teaching mode with nothing picked renders nothing. */}
 					<ComposerActions
-						picker={(practiceProps.length > 0 || mode === "practice") && (
-							<NodePickerControl
-								count={practiceProps.length}
-								onOpen={() => setChainSelectOpen(true)}
-								onClear={() => setPracticeProps([])}
-							/>
+						picker={(
+							<>
+								<button
+									type="button"
+									data-testid="review-recent-work"
+									onClick={() => void reviewRecentWork()}
+									disabled={reviewing}
+									className="flex cursor-pointer items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 font-ui text-xs text-foreground transition-colors hover:bg-accent disabled:opacity-40"
+								>
+									<HistoryIcon aria-hidden="true" className="size-3.5 text-muted-foreground" />
+									Review recent work
+								</button>
+								{(practiceProps.length > 0 || mode === "practice") && (
+									<NodePickerControl
+										count={practiceProps.length}
+										onOpen={() => setChainSelectOpen(true)}
+										onClear={() => setPracticeProps([])}
+									/>
+								)}
+							</>
 						)}
 						setup={zeroKeys ? (
 							<ZeroKeysPill inline onOpen={() => setSetupOpen(true)} />

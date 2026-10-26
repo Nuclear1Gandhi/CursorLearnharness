@@ -13,6 +13,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { describe, it } from "node:test";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
@@ -27,6 +28,7 @@ describe("LH_DATA_DIR seam", () => {
 			assert.equal(PATHS.data, dir, "PATHS.data resolves the env value (resolved absolute)");
 			assert.equal(PATHS.chats, path.join(dir, "chats"));
 			assert.equal(PATHS.graph, path.join(dir, "graph"));
+			assert.equal(PATHS.held, path.join(dir, "held"));
 			assert.equal(
 				PATHS.teacherPrompt,
 				path.join(ROOT, "src", "agent", "system-prompt.md"),
@@ -38,9 +40,11 @@ describe("LH_DATA_DIR seam", () => {
 	});
 
 	it("unset = the repo data/ exactly as before (fresh child process, no env)", () => {
+		const configUrl = pathToFileURL(path.join(REPO_ROOT, "config.ts")).href;
+		const loaderUrl = pathToFileURL(TSX_LOADER).href;
 		const out = execFileSync(
 			process.execPath,
-			["--import", TSX_LOADER, "--eval", `const m = await import(${JSON.stringify(path.join(REPO_ROOT, "config.ts"))}); console.log(JSON.stringify({ data: m.PATHS.data, chats: m.PATHS.chats }));`],
+			["--import", loaderUrl, "--eval", `const m = await import(${JSON.stringify(configUrl)}); console.log(JSON.stringify({ data: m.PATHS.data, chats: m.PATHS.chats }));`],
 			{ cwd: REPO_ROOT, encoding: "utf-8" },
 		);
 		const parsed = JSON.parse(out) as { data: string; chats: string | null };

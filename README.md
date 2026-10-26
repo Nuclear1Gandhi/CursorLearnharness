@@ -71,6 +71,18 @@ See the [development guide](docs/development.md), [architecture](docs/architectu
 
 Questions, bug reports, and feature requests: [GitHub Issues](https://github.com/amosblomqvist/learnharness/issues).
 
+## Modified version (Cursor bridge)
+
+This tree is a modified LearnHarness. Original: [https://github.com/amosblomqvist/learnharness](https://github.com/amosblomqvist/learnharness). License remains AGPL-3.0. Date of this modification: 2026-10-26.
+
+Additions (local `cursor-bridge` branch; nothing pushed):
+
+- **Cursor ingest** — `POST /api/cursor/ingest` and an inbox watcher on `%USERPROFILE%\LearnHarness\inbox` (`LH_INBOX_DIR`). Cursor conversations are a third source kind (`CursorSource`) with their own extractor preamble.
+- **recent_work** — prober/teacher tool plus a home-screen **Review recent work** entry that pre-fills a lesson goal. Practice can filter to recent Cursor propositions.
+- **held-state** — append-only `held.jsonl` ledger (never ratings on graph nodes), `held_state` for the prober, optional canvas overlay.
+
+Local data: set `LH_DATA_DIR` to `%USERPROFILE%\LearnHarness\data`. See [docs/local-setup.md](docs/local-setup.md). The capture hook is documented there; Cursor is only a source.
+
 ## License
 
 [AGPL-3.0](LICENSE)

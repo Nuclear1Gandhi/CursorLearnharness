@@ -134,6 +134,8 @@ export interface CanvasData {
 	colors: CanvasColors;
 	/** Body font family (labels must match the app typography). */
 	fontFamily: string;
+	/** Optional per-node fill override (held-state overlay). */
+	overlayColors?: Record<string, string>;
 }
 
 export interface RendererCallbacks {
@@ -1661,9 +1663,23 @@ export class GraphCanvasRenderer {
 			ctx.fill(this.headsPath);
 		}
 
-		// 4. Nodes: one cached Path2D, one fill.
+		// 4. Nodes: one cached Path2D, one fill. Overlay re-fills individual
+		// discs when held-state coloring is on.
 		ctx.fillStyle = data.colors.node;
 		ctx.fill(this.nodesPath);
+		if (data.overlayColors && this.world) {
+			const nodeR = this.world.nodeR;
+			const visible = this.visible;
+			for (const n of data.nodes) {
+				if (visible && !visible.has(n.id)) continue;
+				const color = data.overlayColors[n.id];
+				if (!color) continue;
+				ctx.fillStyle = color;
+				ctx.beginPath();
+				ctx.arc(n.x, n.y, nodeR, 0, Math.PI * 2);
+				ctx.fill();
+			}
+		}
 
 		// 6. Node labels — one global gate, faded together. World-scaled
 		// with the graph (they grow as you zoom in, Obsidian-style).

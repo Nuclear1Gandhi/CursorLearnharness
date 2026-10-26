@@ -66,6 +66,8 @@ export interface GraphRenderSettings {
 	/** Live-sim physics + inference-depth anchoring. Server-persisted
 	 *  since 2026-09-13 (user request) — was session-only dev state. */
 	physics: PhysicsTuning;
+	/** Color nodes by derived held-state (Phase 5). Off by default. */
+	heldOverlay: boolean;
 }
 
 
@@ -109,6 +111,7 @@ export function sanitizeRenderSettings(raw: unknown): GraphRenderSettings {
 			? { ...sanitizeRegionTuning(r.regions), dilation: DEFAULT_REGION_TUNING.dilation }
 			: sanitizeRegionTuning(r.regions),
 		physics: sanitizePhysicsTuning(r.physics),
+		heldOverlay: typeof r.heldOverlay === "boolean" ? r.heldOverlay : DEFAULT_RENDER_SETTINGS.heldOverlay,
 	};
 }
 
@@ -270,6 +273,7 @@ export const DEFAULT_RENDER_SETTINGS: GraphRenderSettings = {
 	clusterLabelSize: 14,
 	regions: DEFAULT_REGION_TUNING,
 	physics: DEFAULT_PHYSICS_TUNING,
+	heldOverlay: false,
 };
 
 // ─── The slider ladders (2026-09-17) ─────────────────────────────────────────

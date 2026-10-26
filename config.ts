@@ -1,3 +1,4 @@
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -26,10 +27,28 @@ export const PATHS = {
 	/** Chat sessions (AI SDK UIMessage transcripts, one JSON file per chat). */
 	chats: path.join(DATA_ROOT, "chats"),
 	graph: path.join(DATA_ROOT, "graph"),
+	/** Held-state ledger (Cursor-bridge fork): append-only learner outcomes,
+	 * never written onto graph nodes. */
+	held: path.join(DATA_ROOT, "held"),
 	/** Debug artifacts (env-gated): data/debug/provider-events/<chatId>.jsonl
 	 * raw provider stream recordings (src/agent/provider-events.ts). */
 	debug: path.join(DATA_ROOT, "debug"),
 } as const;
+
+/**
+ * Cursor capture inbox — one JSONL file per conversation. Lives NEXT TO
+ * the data dir at ~/LearnHarness/inbox by default (not under LH_DATA_DIR),
+ * so the hook can write while LearnHarness is closed. Override with
+ * LH_INBOX_DIR. On Windows that default is %USERPROFILE%\LearnHarness\inbox.
+ */
+export function inboxDir(): string {
+	return process.env.LH_INBOX_DIR
+		? path.resolve(process.env.LH_INBOX_DIR)
+		: path.join(os.homedir(), "LearnHarness", "inbox");
+}
+
+/** Append-only held-state ledger (Phase 5). */
+export const HELD_FILE = path.join(PATHS.held, "held.jsonl");
 
 // ─── Models ────────────────────────────────────────────────────────────────
 // BYOK ALL THE WAY DOWN (owner, 2026-09-22): there are NO factory default

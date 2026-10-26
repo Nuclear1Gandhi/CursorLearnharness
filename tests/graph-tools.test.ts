@@ -101,8 +101,17 @@ describe("prober graph tools — registration", () => {
 			"probe",
 			"probe_done",
 			"read",
+			"recent_work",
 			"research",
 		]);
+	});
+
+	it("heldStore + graphStore → held_state joins the registry", () => {
+		const { chatStore, graphStore } = fakeStores([node("n1", "Water cycle", [pt("c1")])]);
+		const heldStore = { append: () => {}, read: () => [] };
+		const tools = createProberTools({ ...baseCtx, chatStore, graphStore, heldStore });
+		assert.equal("held_state" in tools, true);
+		assert.equal("recent_work" in tools, true);
 	});
 });
 

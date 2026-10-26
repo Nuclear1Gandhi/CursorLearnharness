@@ -68,6 +68,7 @@ import { MIN_CLUSTER_SIZE } from "./clusters.ts";
 import { formatChainLine } from "./chains.ts";
 import { attachImpToCommunities, birthSessionOf, birthSessionPartition } from "./session-clusters.ts";
 import type { ChatStore, GraphStore } from "./ports.ts";
+import { workspaceFolderName } from "./cursor.ts";
 
 /** The storage ports every graph operation needs, passed explicitly. */
 export interface GraphDeps {
@@ -536,19 +537,32 @@ export function graphSnapshot(deps: GraphDeps): GraphSnapshot {
 	}
 	const sessions: Record<string, string> = {};
 	const fileSources: Record<string, string> = {};
+	const cursorSources: Record<string, { workspace?: string; title?: string; updatedAt: string }> = {};
+	const allSources = deps.graphStore.readSources();
 	for (const id of sourceIds) {
 		const chat = deps.chatStore.getChat(id);
 		if (chat) {
 			sessions[id] = chat.title;
 			continue;
 		}
-		const source = deps.graphStore.readSources().find((s) => s.id === id);
-		if (source) fileSources[id] = source.filePath;
+		const source = allSources.find((s) => s.id === id);
+		if (!source) continue;
+		if (source.kind === "cursor") {
+			cursorSources[id] = {
+				workspace: source.workspace,
+				title: source.title,
+				updatedAt: source.updatedAt ?? source.importedAt,
+			};
+			continue;
+		}
+		fileSources[id] = source.filePath;
 	}
 
 	const nodeSessions: Record<string, string[]> = {};
 	for (const [nodeId, chats] of nodeChats) {
-		const ids = [...chats].filter((id) => sessions[id] !== undefined || fileSources[id] !== undefined);
+		const ids = [...chats].filter(
+			(id) => sessions[id] !== undefined || fileSources[id] !== undefined || cursorSources[id] !== undefined,
+		);
 		if (ids.length > 0) nodeSessions[nodeId] = ids;
 	}
 
@@ -567,7 +581,13 @@ export function graphSnapshot(deps: GraphDeps): GraphSnapshot {
 		.filter((community) => community.members.length >= MIN_CLUSTER_SIZE)
 		.map((community) => ({
 			id: community.id,
-			label: sessions[community.id] ?? fileSources[community.id] ?? null,
+			label:
+				sessions[community.id] ??
+				fileSources[community.id] ??
+				workspaceFolderName(cursorSources[community.id]?.workspace) ??
+				cursorSources[community.id]?.title ??
+				cursorSources[community.id]?.workspace ??
+				null,
 			members: community.members,
 		}));
 	// IMP-NODE CLUSTER ASSIGNMENT (owner, 2026-09-30): majority among the
@@ -592,6 +612,7 @@ export function graphSnapshot(deps: GraphDeps): GraphSnapshot {
 		chains: graph.chains,
 		sessions,
 		fileSources,
+		cursorSources,
 		nodeSessions,
 		clusters,
 		...(Object.keys(positions).length > 0 ? { positions } : {}),
@@ -612,7 +633,7 @@ export interface GraphSessionEntry {
 	/** The chat's title, or the file's path — the cluster label's source. */
 	name: string;
 	/** A real chat (its record still exists) or an imported notes file. */
-	kind: "chat" | "file";
+	kind: "chat" | "file" | "cursor";
 	/** When the session began: the chat's createdAt, or the file's
 	 *  importedAt. null when no record can date it. */
 	createdAt: string | null;
@@ -637,7 +658,8 @@ export function graphSessionIndex(deps: GraphDeps): GraphSessionEntry[] {
 	const sources = new Map(deps.graphStore.readSources().map((s) => [s.id, s]));
 	const entries: GraphSessionEntry[] = [];
 	for (const [id, propositions] of counts) {
-		const chat = chats.get(id);		if (chat) {
+		const chat = chats.get(id);
+		if (chat) {
 			entries.push({
 				id,
 				name: chat.title,
@@ -649,6 +671,17 @@ export function graphSessionIndex(deps: GraphDeps): GraphSessionEntry[] {
 			continue;
 		}
 		const source = sources.get(id);
+		if (source?.kind === "cursor") {
+			entries.push({
+				id,
+				name: workspaceFolderName(source.workspace) || source.title || source.conversationId || id,
+				kind: "cursor",
+				createdAt: source.importedAt,
+				updatedAt: source.updatedAt ?? source.importedAt,
+				propositions,
+			});
+			continue;
+		}
 		entries.push({
 			id,
 			name: source?.filePath ?? id,

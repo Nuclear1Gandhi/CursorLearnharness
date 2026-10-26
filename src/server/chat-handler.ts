@@ -44,6 +44,8 @@ import { beginTurn, endTurn } from "./turn-liveness.ts";
 import { applyParkedDismissal } from "./dismissal-park.ts";
 import { registerTurn, rememberTurnFailure, unregisterTurn } from "./turn-runs.ts";
 import { persistTurn, triggerExtraction, TurnPersistenceError } from "./turn-service.ts";
+import { startCursorInboxWatcher } from "./cursor-inbox.ts";
+import { recordProbeHeld, recordPracticeGrade, recordTeachCheck } from "./held-writers.ts";
 import { hasProbeDone, danglingQuestionOf } from "../core/native-messages.ts";
 import { composeInstructions } from "../agent/teacher-agent.ts";
 import { ensureCompacted, kickCompaction, effectiveThresholdTokens } from "./compaction.ts";
@@ -122,6 +124,10 @@ export const extraction = createExtractionPipeline({
 	providerKeyMissing: (provider, tier) =>
 		providerKeyPresent(provider) ? null : providerKeyMissingEnvelope(provider, [tier]),
 });
+
+if (process.env.NODE_ENV !== "test") {
+	startCursorInboxWatcher({ ingest: (input) => extraction.ingestCursor(input) });
+}
 
 
 // Wake-pipeline wiring (contracts.ts "THE ASYNC PROTOCOL" §4): the pipeline
@@ -282,6 +288,18 @@ export async function handleChatInput(
 		throw err;
 	}
 
+	if (input.type === "answer" && record.kind !== "practice") {
+		const pending = danglingQuestionOf(record.messages);
+		const nodeId = (pending?.input as { nodeId?: unknown } | undefined)?.nodeId;
+		if (pending && (pending.tool === "quiz" || pending.tool === "explain") && typeof nodeId === "string") {
+			try {
+				recordTeachCheck(stores.heldStore, nodeId, input.answer);
+			} catch (err) {
+				console.error(`[chat ${chatId}] held-state check writer failed:`, err);
+			}
+		}
+	}
+
 	// THE PARALLEL-QUESTION GATE (owner, 2026-10-03 — the deepseek parallel
 	// batch incident): an answer that leaves a SIBLING question dangling
 	// defers its wake. The dock advances to the next question (the client's
@@ -432,6 +450,8 @@ export async function handleChatInput(
 							searchAvailable,
 						},
 						...(graphToolsEnabled(effective) ? { graph: { chatStore: stores.chatStore, graphStore: stores.graphStore } } : {}),
+						onPracticeGrade: (nodeIds, outcome, verdict) =>
+							recordPracticeGrade(stores.heldStore, nodeIds, outcome, verdict),
 					},
 					agentOpts,
 				)
@@ -445,6 +465,7 @@ export async function handleChatInput(
 						// The registry drop's signal (2026-09-20): no live engine
 						// = no research tool in the teacher's registry.
 						searchAvailable,
+						...(graphToolsEnabled(effective) ? { graph: { chatStore: stores.chatStore, graphStore: stores.graphStore } } : {}),
 					},
 					agentOpts,
 				)
@@ -462,7 +483,10 @@ export async function handleChatInput(
 						// The map reader (wave 7): the prober reads the learner's
 						// knowledge graph through tools when the gate opens —
 						// graph master switch AND the agent.graphTools toggle.
-						...(graphToolsEnabled(effective) ? { graphStore: stores.graphStore } : {}),
+						...(graphToolsEnabled(effective)
+							? { graphStore: stores.graphStore, heldStore: stores.heldStore }
+							: {}),
+						onProbeDone: (assessment) => recordProbeHeld(stores.heldStore, stores.graphStore, assessment),
 					},
 					agentOpts,
 				);

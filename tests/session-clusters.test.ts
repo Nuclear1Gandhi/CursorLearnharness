@@ -45,7 +45,7 @@ function fakeStores(
 	nodes: GraphNode[],
 	over: {
 		chats?: Array<Pick<ChatSummary, "id" | "title" | "createdAt" | "updatedAt">>;
-		sources?: Array<Pick<NotesSource, "id" | "filePath" | "importedAt">>;
+		sources?: Array<Pick<NotesSource, "id" | "filePath" | "importedAt"> & Partial<NotesSource>>;
 		chains?: GraphChain[];
 	} = {},
 ): GraphDeps {
@@ -141,6 +141,35 @@ describe("notes files as birth sessions", () => {
 		assert.deepEqual(graphSessionPropositions(deps, "src_abc"), [
 			{ nodeId: "a", name: "Alpha" },
 			{ nodeId: "b", name: "Beta" },
+		]);
+	});
+
+	it("graphSessionIndex lists Cursor sources as kind:cursor with the workspace folder as the project label", () => {
+		const nodes = [node("a", "Optimistic concurrency", [pt("conv-1")])];
+		const deps = fakeStores(nodes, {
+			sources: [
+				{
+					id: "conv-1",
+					filePath: "C:\\Users\\marti\\PROJECT\\CursorLearnharness",
+					importedAt: "2026-10-20T00:00:00.000Z",
+					kind: "cursor",
+					conversationId: "conv-1",
+					workspace: "C:\\Users\\marti\\PROJECT\\CursorLearnharness",
+					title: "bridge design",
+					updatedAt: "2026-10-26T00:00:00.000Z",
+				},
+			],
+		});
+		const index = graphSessionIndex(deps);
+		assert.deepEqual(index, [
+			{
+				id: "conv-1",
+				name: "CursorLearnharness",
+				kind: "cursor",
+				createdAt: "2026-10-20T00:00:00.000Z",
+				updatedAt: "2026-10-26T00:00:00.000Z",
+				propositions: 1,
+			},
 		]);
 	});
 });

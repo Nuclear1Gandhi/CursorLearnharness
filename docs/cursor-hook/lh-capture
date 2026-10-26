@@ -1,0 +1,640 @@
+#!/usr/bin/env node
+'use strict';
+
+/**
+ * LearnHarness capture hook (Cursor `stop`).
+ *
+ * Cursor is only a source. This script never quizzes, never calls a network,
+ * and never blocks the agent: every path exits 0.
+ *
+ * Install: copy to `~/.cursor/hooks/lh-capture` and merge `hooks.json`.
+ * User-level hooks run with cwd `~/.cursor/`, so the documented command is
+ * `node ./hooks/lh-capture`.
+ */
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+// ---------------------------------------------------------------------------
+// Configuration (override with environment variables)
+// ---------------------------------------------------------------------------
+
+/** Default inbox under the learner home: ~/LearnHarness/inbox */
+const DEFAULT_INBOX_SEGMENTS = ['LearnHarness', 'inbox'];
+/** Workspace opt-out marker, relative to each workspace root. */
+const IGNORE_REL = path.join('.cursor', 'lh-ignore');
+/** Fail-open log name inside the inbox directory. */
+const ERROR_LOG_NAME = '_errors.log';
+/** Set to `1` / `true` / `yes` to disable writes without removing the hook. */
+const DISABLE_ENV = 'LH_CAPTURE_DISABLED';
+/** Inbox directory override. */
+const INBOX_ENV = 'LH_INBOX_DIR';
+/** Filename-safe conversation id. */
+const CONVERSATION_ID_MAX = 200;
+
+const TOKEN_PREFIX_RE = /\b(?:sk-[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|xoxb-[A-Za-z0-9-]{10,}|xoxp-[A-Za-z0-9-]{10,}|xoxe-[A-Za-z0-9-]{10,}|xoxa-[A-Za-z0-9-]{10,}|glpat-[A-Za-z0-9_-]{20,}|gho_[A-Za-z0-9_]{20,}|ghu_[A-Za-z0-9_]{20,}|AIza[0-9A-Za-z_-]{20,})\b/g;
+
+const PEM_RE = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g;
+
+const BEARER_RE = /(\b(?:Bearer|Authorization:\s*Bearer)\s+)[A-Za-z0-9._\-+=/]+/gi;
+
+const ENV_ASSIGN_RE = /(^|[\s;])([A-Z][A-Z0-9_]{1,128})\s*=\s*(["']?)([^\s#]+)\3/gm;
+
+const NOISE_FENCE_RE = /```(?:diff|patch|bash|sh|shell|zsh|fish|console|powershell|pwsh|cmd|bat|terminal|output|ansi)[^\n`]*\n[\s\S]*?```/gi;
+
+const BEGIN_PATCH_RE = /\*{3} Begin Patch[\s\S]*?\*{3} End Patch/g;
+
+const UNIFIED_DIFF_RE = /^(?:diff --git |index [0-9a-f]+\.\.[0-9a-f]+|--- [ab\/]|\+\+\+ [ab\/]|@@ .+ @@).*$/gm;
+
+const DROPPED_BLOCK_TYPES = new Set([
+  'tool_use',
+  'tool_call',
+  'tool_result',
+  'tool-result',
+  'function_call',
+  'function',
+  'functionCall',
+  'command',
+  'shell',
+  'mcp',
+  'diff',
+  'edit',
+  'image',
+]);
+
+// ---------------------------------------------------------------------------
+// Paths
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the learner home directory.
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {string}
+ */
+function resolveHome(env = process.env) {
+  return env.HOME || env.USERPROFILE || os.homedir();
+}
+
+/**
+ * Expand a leading `~` using the given home.
+ * @param {string} raw
+ * @param {string} home
+ * @returns {string}
+ */
+function expandHome(raw, home) {
+  if (!raw) {
+    return raw;
+  }
+  if (raw === '~') {
+    return home;
+  }
+  if (raw.startsWith('~/') || raw.startsWith('~\\')) {
+    return path.join(home, raw.slice(2));
+  }
+  return raw;
+}
+
+/**
+ * Inbox directory: `LH_INBOX_DIR` or `~/LearnHarness/inbox`.
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {string}
+ */
+function resolveInboxDir(env = process.env) {
+  const home = resolveHome(env);
+  const override = env[INBOX_ENV];
+  if (override && String(override).trim()) {
+    return path.resolve(expandHome(String(override).trim(), home));
+  }
+  return path.join(home, ...DEFAULT_INBOX_SEGMENTS);
+}
+
+/**
+ * Sanitize a conversation id so it cannot escape the inbox directory.
+ * @param {unknown} id
+ * @returns {string}
+ */
+function safeConversationId(id) {
+  const raw = String(id == null ? '' : id).trim();
+  const cleaned = raw.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, CONVERSATION_ID_MAX);
+  return cleaned || 'unknown';
+}
+
+/**
+ * Whether capture is disabled via `LH_CAPTURE_DISABLED`.
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {boolean}
+ */
+function isDisabled(env = process.env) {
+  const v = String(env[DISABLE_ENV] || '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes';
+}
+
+/**
+ * True when any workspace root contains `.cursor/lh-ignore`.
+ * @param {string[]} workspaceRoots
+ * @param {{existsSync: Function}} [fsApi]
+ * @returns {boolean}
+ */
+function shouldIgnore(workspaceRoots, fsApi = fs) {
+  if (!Array.isArray(workspaceRoots)) {
+    return false;
+  }
+  return workspaceRoots.some((root) => {
+    if (!root || typeof root !== 'string') {
+      return false;
+    }
+    try {
+      return fsApi.existsSync(path.join(root, IGNORE_REL));
+    } catch {
+      return false;
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Redaction
+// ---------------------------------------------------------------------------
+
+/**
+ * Replace secrets in captured prose. Patterns: PEM blocks, bearer/API tokens,
+ * `sk-` / `ghp_` / `xoxb-` (and close cousins), and `.env`-style KEY=value.
+ * @param {string} text
+ * @returns {string}
+ */
+function redactSecrets(text) {
+  if (!text) {
+    return text;
+  }
+  let out = String(text);
+  out = out.replace(PEM_RE, '[REDACTED_PRIVATE_KEY]');
+  out = out.replace(BEARER_RE, '$1[REDACTED_TOKEN]');
+  out = out.replace(TOKEN_PREFIX_RE, '[REDACTED_TOKEN]');
+  out = out.replace(ENV_ASSIGN_RE, '$1$2=$3[REDACTED]$3');
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Transcript extraction
+// ---------------------------------------------------------------------------
+
+/**
+ * Drop diff / patch / shell fences and unified-diff lines. Keep other prose
+ * and idea-carrying code fences (js, ts, python, …).
+ * @param {string} text
+ * @returns {string}
+ */
+function stripNoise(text) {
+  if (!text) {
+    return '';
+  }
+  let out = String(text);
+  out = out.replace(NOISE_FENCE_RE, '');
+  out = out.replace(BEGIN_PATCH_RE, '');
+  out = out.replace(UNIFIED_DIFF_RE, '');
+  out = out.replace(/\n{3,}/g, '\n\n').trim();
+  return out;
+}
+
+/**
+ * Pull the human prompt out of Cursor's `<user_query>` wrapper.
+ * @param {string} raw
+ * @returns {string}
+ */
+function extractHumanUserText(raw) {
+  if (!raw) {
+    return '';
+  }
+  const startTag = '<user_query>';
+  const endTag = '</user_query>';
+  const start = raw.indexOf(startTag);
+  if (start !== -1) {
+    const after = raw.slice(start + startTag.length);
+    const end = after.indexOf(endTag);
+    const inner = (end === -1 ? after : after.slice(0, end)).trim();
+    if (inner) {
+      return inner;
+    }
+  }
+  return raw.replace(/<system_reminder>[\s\S]*?<\/system_reminder>/g, '').trim();
+}
+
+/**
+ * Collect prose from a content value. Tool calls, diffs, and shell blocks
+ * are dropped at this layer.
+ * @param {unknown} content
+ * @param {string[]} parts
+ * @returns {void}
+ */
+function collectProse(content, parts) {
+  if (content == null) {
+    return;
+  }
+  if (typeof content === 'string') {
+    parts.push(content);
+    return;
+  }
+  if (Array.isArray(content)) {
+    content.forEach((block) => collectProse(block, parts));
+    return;
+  }
+  if (typeof content !== 'object') {
+    return;
+  }
+  const rec = /** @type {Record<string, unknown>} */ (content);
+  const type = String(rec.type || rec.kind || '');
+  if (DROPPED_BLOCK_TYPES.has(type)) {
+    return;
+  }
+  if (type === 'thinking' || type === 'reasoning') {
+    const thinking = typeof rec.text === 'string' ? rec.text : '';
+    if (thinking && thinking !== '[REDACTED]') {
+      parts.push(thinking);
+    }
+    return;
+  }
+  if (typeof rec.text === 'string') {
+    parts.push(rec.text);
+    return;
+  }
+  if (rec.message && typeof rec.message === 'object') {
+    const message = /** @type {Record<string, unknown>} */ (rec.message);
+    collectProse(message.content != null ? message.content : message, parts);
+  }
+}
+
+/**
+ * @param {Record<string, unknown>} rec
+ * @returns {unknown}
+ */
+function contentFromRecord(rec) {
+  if (!rec) {
+    return null;
+  }
+  if (rec.message && typeof rec.message === 'object') {
+    const message = /** @type {Record<string, unknown>} */ (rec.message);
+    if (message.content != null) {
+      return message.content;
+    }
+  }
+  if (rec.content != null) {
+    return rec.content;
+  }
+  if (rec.text != null) {
+    return rec.text;
+  }
+  return null;
+}
+
+/**
+ * @param {Record<string, unknown>} rec
+ * @returns {string}
+ */
+function recordRole(rec) {
+  const role = rec.role || rec.type;
+  return typeof role === 'string' ? role : '';
+}
+
+/**
+ * @param {Record<string, unknown>} rec
+ * @returns {string}
+ */
+function recordGenerationId(rec) {
+  if (typeof rec.generation_id === 'string' && rec.generation_id) {
+    return rec.generation_id;
+  }
+  if (typeof rec.generationId === 'string' && rec.generationId) {
+    return rec.generationId;
+  }
+  if (rec.message && typeof rec.message === 'object') {
+    const message = /** @type {Record<string, unknown>} */ (rec.message);
+    if (typeof message.generation_id === 'string' && message.generation_id) {
+      return message.generation_id;
+    }
+  }
+  return '';
+}
+
+/**
+ * Parse JSONL, skipping malformed lines.
+ * @param {string} text
+ * @returns {Record<string, unknown>[]}
+ */
+function parseTranscript(text) {
+  const records = [];
+  String(text).split(/\r?\n/).forEach((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      return;
+    }
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object') {
+        records.push(parsed);
+      }
+    } catch {
+      // * One bad row must not drop the rest of the turn.
+    }
+  });
+  return records;
+}
+
+/**
+ * Group records into user-started turns.
+ * @param {Record<string, unknown>[]} records
+ * @returns {{user: Record<string, unknown>|null, assistants: Record<string, unknown>[], generationIds: Set<string>}[]}
+ */
+function buildTurns(records) {
+  /** @type {{user: Record<string, unknown>|null, assistants: Record<string, unknown>[], generationIds: Set<string>}[]} */
+  const turns = [];
+  let current = null;
+  records.forEach((rec) => {
+    const role = recordRole(rec);
+    if (role === 'user') {
+      current = {
+        user: rec,
+        assistants: [],
+        generationIds: new Set(),
+      };
+      const gid = recordGenerationId(rec);
+      if (gid) {
+        current.generationIds.add(gid);
+      }
+      turns.push(current);
+      return;
+    }
+    if (role === 'assistant') {
+      if (!current) {
+        current = { user: null, assistants: [], generationIds: new Set() };
+        turns.push(current);
+      }
+      current.assistants.push(rec);
+      const gid = recordGenerationId(rec);
+      if (gid) {
+        current.generationIds.add(gid);
+      }
+    }
+  });
+  return turns;
+}
+
+/**
+ * Latest user + assistant prose for this generation / last turn.
+ * @param {string} transcriptText
+ * @param {string} [generationId]
+ * @returns {{userText: string, assistantText: string}}
+ */
+function extractTurn(transcriptText, generationId) {
+  const turns = buildTurns(parseTranscript(transcriptText));
+  if (turns.length === 0) {
+    return { userText: '', assistantText: '' };
+  }
+  let picked = turns[turns.length - 1];
+  if (generationId) {
+    for (let i = turns.length - 1; i >= 0; i -= 1) {
+      if (turns[i].generationIds.has(generationId)) {
+        picked = turns[i];
+        break;
+      }
+    }
+  }
+  const userParts = [];
+  if (picked.user) {
+    collectProse(contentFromRecord(picked.user), userParts);
+  }
+  const assistantParts = [];
+  picked.assistants.forEach((rec) => {
+    collectProse(contentFromRecord(rec), assistantParts);
+  });
+  return {
+    userText: extractHumanUserText(userParts.join('\n')),
+    assistantText: stripNoise(assistantParts.join('\n\n')),
+  };
+}
+
+/**
+ * Read a transcript file if it exists. Missing / disabled transcripts are empty.
+ * @param {string|null|undefined} transcriptPath
+ * @param {{readFileSync: Function, statSync: Function}} [fsApi]
+ * @returns {string}
+ */
+function readTranscript(transcriptPath, fsApi = fs) {
+  if (!transcriptPath || typeof transcriptPath !== 'string') {
+    return '';
+  }
+  try {
+    const stat = fsApi.statSync(transcriptPath);
+    if (!stat.isFile()) {
+      return '';
+    }
+    return String(fsApi.readFileSync(transcriptPath, 'utf8'));
+  } catch {
+    return '';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Hook I/O
+// ---------------------------------------------------------------------------
+
+/**
+ * True when this invocation is a `stop` (the only event this script writes).
+ * A missing event name still counts: the script is wired only to `stop`.
+ * @param {Record<string, unknown>} payload
+ * @returns {boolean}
+ */
+function isStopEvent(payload) {
+  const name = payload.hook_event_name || payload.hookEventName;
+  if (!name) {
+    return true;
+  }
+  return name === 'stop';
+}
+
+/**
+ * Append one JSONL object. Never throws to the caller.
+ * @param {object} options
+ * @returns {{wrote: boolean, skipped?: string, line?: object, error?: string}}
+ */
+function processHook(options) {
+  const {
+    payload,
+    env = process.env,
+    fsApi = fs,
+    now = new Date(),
+  } = options;
+  try {
+    if (!payload || typeof payload !== 'object') {
+      return { wrote: false, skipped: 'invalid_payload' };
+    }
+    if (isDisabled(env)) {
+      return { wrote: false, skipped: 'disabled' };
+    }
+    if (!isStopEvent(payload)) {
+      return { wrote: false, skipped: 'not_stop' };
+    }
+    const workspaceRoots = Array.isArray(payload.workspace_roots)
+      ? payload.workspace_roots
+      : [];
+    if (shouldIgnore(workspaceRoots, fsApi)) {
+      return { wrote: false, skipped: 'lh_ignore' };
+    }
+    const conversationId = payload.conversation_id;
+    if (!conversationId) {
+      return { wrote: false, skipped: 'missing_conversation_id' };
+    }
+    const transcriptPath = payload.transcript_path
+      || env.CURSOR_TRANSCRIPT_PATH
+      || null;
+    const extracted = extractTurn(
+      readTranscript(transcriptPath, fsApi),
+      typeof payload.generation_id === 'string' ? payload.generation_id : '',
+    );
+    const userText = redactSecrets(extracted.userText);
+    const assistantText = redactSecrets(extracted.assistantText);
+    if (!userText && !assistantText) {
+      return { wrote: false, skipped: 'empty_turn' };
+    }
+    const line = {
+      conversation_id: String(conversationId),
+      generation_id: payload.generation_id == null ? '' : String(payload.generation_id),
+      workspace_roots: workspaceRoots.map((root) => String(root)),
+      at: now.toISOString(),
+      user_text: userText,
+      assistant_text: assistantText,
+    };
+    const inboxDir = resolveInboxDir(env);
+    fsApi.mkdirSync(inboxDir, { recursive: true });
+    const filePath = path.join(inboxDir, `${safeConversationId(conversationId)}.jsonl`);
+    fsApi.appendFileSync(filePath, `${JSON.stringify(line)}\n`, 'utf8');
+    return { wrote: true, line };
+  } catch (err) {
+    const message = err && err.message ? err.message : String(err);
+    writeErrorLog(env, `processHook: ${message}`, fsApi);
+    return { wrote: false, skipped: 'error', error: message };
+  }
+}
+
+/**
+ * Write a fail-open line. Swallows secondary I/O errors.
+ * @param {NodeJS.ProcessEnv} env
+ * @param {string} message
+ * @param {{mkdirSync?: Function, appendFileSync?: Function}} [fsApi]
+ * @returns {void}
+ */
+function writeErrorLog(env, message, fsApi = fs) {
+  try {
+    const inboxDir = resolveInboxDir(env);
+    if (typeof fsApi.mkdirSync === 'function') {
+      fsApi.mkdirSync(inboxDir, { recursive: true });
+    }
+    const stamp = new Date().toISOString();
+    fsApi.appendFileSync(
+      path.join(inboxDir, ERROR_LOG_NAME),
+      `${stamp} ${message}\n`,
+      'utf8',
+    );
+  } catch {
+    // ! Cannot reach the inbox. Swallow so the agent is never blocked.
+  }
+}
+
+/**
+ * Parse stdin JSON and capture. Always safe for the agent.
+ * @param {string} stdinText
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {object} [deps]
+ * @returns {{wrote: boolean, skipped?: string, line?: object, error?: string}}
+ */
+function run(stdinText, env = process.env, deps = {}) {
+  const fsApi = deps.fsApi || fs;
+  const trimmed = String(stdinText || '').trim();
+  if (!trimmed) {
+    return { wrote: false, skipped: 'empty_stdin' };
+  }
+  let payload;
+  try {
+    payload = JSON.parse(trimmed);
+  } catch (err) {
+    const message = err && err.message ? err.message : String(err);
+    writeErrorLog(env, `invalid JSON on stdin: ${message}`, fsApi);
+    return { wrote: false, skipped: 'invalid_json', error: message };
+  }
+  return processHook({ payload, env, fsApi, now: deps.now });
+}
+
+/**
+ * CLI entry. Reads stdin, writes nothing blocking to stderr, exits 0.
+ * @returns {void}
+ */
+function main() {
+  const chunks = [];
+  const finish = () => {
+    try {
+      run(chunks.join(''), process.env);
+    } catch (err) {
+      const message = err && err.message ? err.message : String(err);
+      writeErrorLog(process.env, `uncaught: ${message}`);
+    }
+    try {
+      // * Valid empty hook output. Never emit a follow-up (this hook does not quiz).
+      process.stdout.write('{}\n');
+    } catch {
+      // ignore
+    }
+    process.exit(0);
+  };
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (chunk) => {
+    chunks.push(chunk);
+  });
+  process.stdin.on('end', finish);
+  process.stdin.on('error', (err) => {
+    writeErrorLog(process.env, `stdin: ${err && err.message ? err.message : err}`);
+    finish();
+  });
+}
+
+process.on('uncaughtException', (err) => {
+  writeErrorLog(process.env, `uncaughtException: ${err && err.message ? err.message : err}`);
+  try {
+    process.stdout.write('{}\n');
+  } catch {
+    // ignore
+  }
+  process.exit(0);
+});
+
+process.on('unhandledRejection', (err) => {
+  const message = err && err.message ? err.message : String(err);
+  writeErrorLog(process.env, `unhandledRejection: ${message}`);
+  try {
+    process.stdout.write('{}\n');
+  } catch {
+    // ignore
+  }
+  process.exit(0);
+});
+
+if (require.main === module) {
+  main();
+}
+
+module.exports = {
+  DEFAULT_INBOX_SEGMENTS,
+  DISABLE_ENV,
+  INBOX_ENV,
+  collectProse,
+  extractHumanUserText,
+  extractTurn,
+  isDisabled,
+  isStopEvent,
+  processHook,
+  redactSecrets,
+  resolveInboxDir,
+  run,
+  safeConversationId,
+  shouldIgnore,
+  stripNoise,
+  writeErrorLog,
+};

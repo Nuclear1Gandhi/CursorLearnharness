@@ -29,6 +29,13 @@ import { emit } from "../../core/events.ts";
 import { settleGraphLayout } from "../../core/layout-settle.ts";
 import { batchRuns, coverageOf, messageViewLines } from "../../core/coverage.ts";
 import { failedOutputCallIds, type LhMessage } from "../../core/native-messages.ts";
+import {
+	cursorBatchView,
+	cursorSourceId,
+	cursorTurnAsMessage,
+	cursorTurnId,
+	type CursorIngestInput,
+} from "../../core/cursor.ts";
 import { auditorGraphTools } from "../tools/graph.ts";
 import { runSubmitAgent, healStringifiedArrays } from "./submit-agent.ts";
 
@@ -398,6 +405,17 @@ export const NOTES_PREAMBLE =
 	"author's personal notes, rendered in reading order — and report what it teaches as findings for the " +
 	"learner's global knowledge graph, building on everything already extracted from this source.";
 
+export const CURSOR_PREAMBLE =
+	"You are the extraction stage of a learning application. You read one stretch of a Cursor coding " +
+	"session — the learner's prompts and the assistant's replies, in reading order — and report what it " +
+	"teaches as findings for the learner's global knowledge graph, building on everything already extracted " +
+	"from this conversation. Keep the problem being solved, options considered, the decision and its reason, " +
+	"explanations of concepts, and places the learner was unsure or asked again. Drop implementation chatter " +
+	"and file-specific details that are not knowledge. Nodes must read as concepts and decisions, not file edits.";
+
+export const CURSOR_MESSAGE_ID_RULE =
+	"For each new proposition, copy the turn id from that turn's TURN [id] label into messageId.";
+
 export const EXTRACTION_CORE = `THE GOAL: uncover the source's CORE IDEAS and show how everything derives from the foundations. The
 source teaches by arguing — ideas worked out from other ideas, down to a foundation the rest stands on.
 Your deliverable is twofold: the core ideas themselves, and the chains of reasoning that derive them.
@@ -434,6 +452,7 @@ arguments. The tool's field descriptions carry the details.`;
 
 export const EXTRACTOR_INSTRUCTIONS = `${SESSION_PREAMBLE}\n\n${EXTRACTION_CORE}\n\n${SESSION_MESSAGE_ID_RULE}`;
 export const NOTES_EXTRACTOR_INSTRUCTIONS = `${NOTES_PREAMBLE}\n\n${EXTRACTION_CORE}`;
+export const CURSOR_EXTRACTOR_INSTRUCTIONS = `${CURSOR_PREAMBLE}\n\n${EXTRACTION_CORE}\n\n${CURSOR_MESSAGE_ID_RULE}`;
 
 // ── the same-source digest (owner, 2026-09-30 evening) ──
 //
@@ -491,6 +510,46 @@ function runExtractor(
 		fill: fillFindings,
 		validate: (value) => validateSessionAnchors(value, batchIds) ?? validateFindingsChains(value, existingIds),
 		systemPrompt: EXTRACTOR_INSTRUCTIONS,
+		prompt,
+		engine,
+		signal,
+		onStep,
+		neverSubmitted: "the extractor never submitted findings",
+		prepareArguments: healStringifiedArrays,
+	}).then(asSessionFindings);
+}
+
+function validateCursorAnchors(value: SessionFindingsSubmit, batchIds: ReadonlySet<string>): string | null {
+	for (const p of value.propositions) {
+		if (p.messageId.trim().length === 0) {
+			return `propositions: "${p.id}" is missing its messageId — copy the turn id from the TURN [id] label.`;
+		}
+		if (!batchIds.has(p.messageId)) {
+			return `propositions: "${p.id}" names messageId "${p.messageId}", which is not a TURN [id] of THIS stretch.`;
+		}
+	}
+	return null;
+}
+
+/** The extractor over one Cursor conversation stretch (the Cursor front door). */
+function runCursorExtractor(
+	engine: PiEngine | undefined,
+	sourceId: string,
+	prompt: string,
+	existingIds: ReadonlySet<string>,
+	batchIds: ReadonlySet<string>,
+	signal: AbortSignal | undefined,
+	onStep: (usage: Usage, model: string, step: number, finishReason: string, tools: string) => void,
+): Promise<SessionFindings> {
+	return runSubmitAgent<SessionFindingsSubmit>({
+		role: "extractor",
+		chatId: sourceId,
+		toolName: "submit_findings",
+		toolDescription: "Submit the Cursor-session findings.",
+		parameters: sessionFindingsSchema,
+		fill: fillFindings,
+		validate: (value) => validateCursorAnchors(value, batchIds) ?? validateFindingsChains(value, existingIds),
+		systemPrompt: CURSOR_EXTRACTOR_INSTRUCTIONS,
 		prompt,
 		engine,
 		signal,
@@ -769,6 +828,9 @@ export interface ExtractionPipeline {
 	 *  path, so re-importing the same file re-runs extraction against the
 	 *  same source identity (mappings dedupe by it). */
 	importNotes(input: NotesImportInput): Promise<EmissionStats>;
+	/** Cursor front door: ingest turns of one conversation. Idempotent per
+	 *  turn fingerprint — already-covered turns are no-ops. */
+	ingestCursor(input: CursorIngestInput): Promise<EmissionStats>;
 }
 
 /** pi's per-step usage, flattened to the persisted CallUsage fields
@@ -915,6 +977,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		sourceId: string,
 		view: string,
 		batchIds: ReadonlySet<string>,
+		mode: "session" | "cursor" = "session",
 	): Promise<SessionFindings> {
 		const signal = runningExtractions.get(jobKey)?.controller.signal;
 		signal?.throwIfAborted(); // an abort during a sync gap ends the job here
@@ -933,7 +996,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		);
 		const t0 = performance.now();
 
-		const findings = await runExtractor(
+		const findings = await (mode === "cursor" ? runCursorExtractor : runExtractor)(
 			stageEngine("extractor", deps.extractor),
 			sourceId,
 			prompt,
@@ -1434,6 +1497,98 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		}
 	}
 
-	return { runExtraction, importNotes };
+	async function ingestCursor(input: CursorIngestInput): Promise<EmissionStats> {
+		const conversationId = input.conversationId.trim();
+		if (conversationId.length === 0) throw new Error("conversationId is required");
+		const id = cursorSourceId(conversationId);
+		if (inFlight.has(id)) return { nodes: 0, chains: 0 };
+		inFlight.add(id);
+		const t0 = performance.now();
+		try {
+			refuseIfStagesUnready();
+			const now = new Date().toISOString();
+			const existing = graphStore.readSources().find((s) => s.id === id);
+			const turns = input.turns.map((turn) => ({ ...turn, id: cursorTurnId(turn) }));
+			const messages = turns.map((turn) => cursorTurnAsMessage(turn));
+			const covered = coverageOf(messages, graphStore.readCoverage(), id);
+			graphStore.upsertSource({
+				id,
+				filePath: input.workspace || conversationId,
+				importedAt: existing?.importedAt ?? now,
+				kind: "cursor",
+				conversationId,
+				workspace: input.workspace,
+				title: input.title ?? existing?.title,
+				updatedAt:
+					covered.uncovered.length === 0
+						? (existing?.updatedAt ?? existing?.importedAt ?? now)
+						: now,
+			});
+			if (covered.uncovered.length === 0) {
+				console.info(`[extraction ${id}] cursor ingest nothing uncovered — no-op`);
+				return { nodes: 0, chains: 0 };
+			}
+			const chunkTokens = deps.getChunkTokens?.() ?? FACTORY_SETTINGS.graph.extractionChunkTokens;
+			const batches = batchRuns(covered.slots, covered.uncovered, chunkTokens);
+			const label = input.title || input.workspace || conversationId;
+			const settled: PromiseSettledResult<EmissionStats>[] = [];
+			for (const [batchIndex, batch] of batches.entries()) {
+				const part = batches.length > 1 ? { i: batchIndex + 1, n: batches.length } : undefined;
+				try {
+					settled.push({
+						status: "fulfilled",
+						value: await runJob({ id, kind: "notes", label, part }, async (jobKey) => {
+							const batchTurns = batch.map((slot) => {
+								const message = slot.message;
+								const turn = turns.find((t) => t.id === message.id);
+								return turn ?? { id: message.id, userText: "", assistantText: "" };
+							});
+							const view = cursorBatchView(input.title, batchTurns);
+							const batchIds = new Set(batchTurns.map((t) => t.id));
+							setPhase(jobKey, "queued", "notes", label, part);
+							const findings = await withExtractSlot(jobKey, async () => {
+								setPhase(jobKey, "extracting", "notes", label, part);
+								return extract(jobKey, id, view, batchIds, "cursor");
+							});
+							return withAuditLock(jobKey, "notes", label, async () => {
+								setPhase(jobKey, "auditing", "notes", label, part);
+								const auditResult = await audit(jobKey, id, findings);
+								setPhase(jobKey, "merging", "notes", label, part);
+								const foldedAt = new Date().toISOString();
+								const batchStats = mergeFindings(id, findings, auditResult, { chatStore, graphStore }, {
+									foldedAt,
+									coverage: batch
+										.filter((slot) => slot.tokens > 0)
+										.map((slot) => ({ chatId: id, fp: slot.fp, tokens: slot.tokens, foldedAt })),
+								});
+								settleGraphLayout(graphStore);
+								console.info(
+									`[extraction ${jobKey}] merged: ${batchStats.nodes} nodes, ${batchStats.chains ?? 0} chains`,
+								);
+								return batchStats;
+							});
+						}),
+					});
+				} catch (err) {
+					settled.push({ status: "rejected", reason: err });
+					if (err instanceof Error && err.name === "AbortError") break;
+				}
+			}
+			const stats = aggregateJobs(id, settled);
+			console.info(
+				`[extraction ${id}] cursor ingest merged: ${stats.nodes} nodes, ${stats.chains ?? 0} chains ` +
+					`(${Math.round(performance.now() - t0)}ms total, ${batches.length} batch job(s))`,
+			);
+			return stats;
+		} catch (err) {
+			console.error(`[extraction ${id}] cursor ingest failed (${Math.round(performance.now() - t0)}ms):`, err);
+			throw err;
+		} finally {
+			inFlight.delete(id);
+			finishExtraction(id);
+		}
+	}
+
+	return { runExtraction, importNotes, ingestCursor };
 }
 

@@ -53,8 +53,11 @@ import {
 	SESSION_PREAMBLE,
 	SESSION_MESSAGE_ID_RULE,
 	NOTES_PREAMBLE,
+	CURSOR_PREAMBLE,
+	CURSOR_MESSAGE_ID_RULE,
 	EXTRACTOR_INSTRUCTIONS,
 	NOTES_EXTRACTOR_INSTRUCTIONS,
+	CURSOR_EXTRACTOR_INSTRUCTIONS,
 } from "../src/agent/subagents/extraction.ts";
 import { getGraph, simplifyChains } from "../src/core/graph.ts";
 import { ModelsNotConfiguredError, ProviderKeyMissingError, providerKeyMissing, type ModelSlotName } from "../src/core/settings.ts";
@@ -1461,6 +1464,9 @@ describe("the extractor redesign (owner, 2026-09-30): chains are the deliverable
 		assert.ok(EXTRACTOR_INSTRUCTIONS.includes(EXTRACTION_CORE));
 		assert.ok(NOTES_EXTRACTOR_INSTRUCTIONS.startsWith(NOTES_PREAMBLE));
 		assert.ok(NOTES_EXTRACTOR_INSTRUCTIONS.includes(EXTRACTION_CORE), "the notes extractor shares the core by construction");
+		assert.ok(CURSOR_EXTRACTOR_INSTRUCTIONS.startsWith(CURSOR_PREAMBLE));
+		assert.ok(CURSOR_EXTRACTOR_INSTRUCTIONS.includes(EXTRACTION_CORE), "the Cursor extractor shares the core by construction");
+		assert.ok(CURSOR_EXTRACTOR_INSTRUCTIONS.includes(CURSOR_MESSAGE_ID_RULE));
 
 		// THE ANCHOR RULE (owner, 2026-10-13) is SESSION-ONLY: the exact
 		// sentence rides the session instructions; the notes
@@ -1474,12 +1480,18 @@ describe("the extractor redesign (owner, 2026-09-30): chains are the deliverable
 
 		// The preambles differ in exactly their source description.
 		assert.notEqual(SESSION_PREAMBLE, NOTES_PREAMBLE);
+		assert.notEqual(SESSION_PREAMBLE, CURSOR_PREAMBLE);
 		assert.match(SESSION_PREAMBLE, /a teaching\s+session, rendered as the teacher's prose in reading order/);
 		assert.match(NOTES_PREAMBLE, /the\s+author's personal notes, rendered in reading order/);
+		assert.match(CURSOR_PREAMBLE, /Cursor coding\s+session/);
+		assert.match(CURSOR_PREAMBLE, /problem being solved/);
+		assert.match(CURSOR_PREAMBLE, /decision and its reason/);
+		assert.match(CURSOR_PREAMBLE, /not file edits/);
+		assert.match(CURSOR_PREAMBLE, /Drop implementation chatter/);
 
 		// NO RULE ARMOR (owner, 2026-09-30): the defensive lists are CUT
 		// from both contextualizations.
-		for (const prompt of [EXTRACTOR_INSTRUCTIONS, NOTES_EXTRACTOR_INSTRUCTIONS]) {
+		for (const prompt of [EXTRACTOR_INSTRUCTIONS, NOTES_EXTRACTOR_INSTRUCTIONS, CURSOR_EXTRACTOR_INSTRUCTIONS]) {
 			assert.doesNotMatch(prompt, /DROP:/);
 			assert.doesNotMatch(prompt, /MERGE YOUR OWN OUTPUT/);
 			assert.doesNotMatch(prompt, /WHEN IN DOUBT, OMIT/);

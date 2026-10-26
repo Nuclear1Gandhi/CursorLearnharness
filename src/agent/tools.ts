@@ -18,7 +18,10 @@ import type { JobStore } from "../core/ports.ts";
 import { jobTools, type DemoInput, type PdfInput, type ResearchInput, type VisualInput } from "./tools/jobs.ts";
 import { planTools, type PlanToolContext } from "./tools/plan.ts";
 import { probeDoneTool, type ProbeDoneContext } from "./tools/probe.ts";
-import { proberGraphTools } from "./tools/graph.ts";
+import { proberGraphTools, type GraphToolContext } from "./tools/graph.ts";
+import { recentWorkTool } from "./tools/recent-work.ts";
+import { heldStateTool } from "./tools/held-state.ts";
+import type { HeldStore } from "../core/ports.ts";
 import { readTool } from "./tools/read.ts";
 import { lsTool } from "./tools/ls.ts";
 import { findTool } from "./tools/find.ts";
@@ -276,6 +279,8 @@ export interface ProberToolContext extends ProbeDoneContext {
 	 *  master switch AND the agent.graphTools toggle (settings-resolution).
 	 *  Absent = the gate is closed, no map tools (tests drive this seam). */
 	graphStore?: GraphStore;
+	/** Held-state ledger (Phase 5) — held_state tool + probe_done writer. */
+	heldStore?: HeldStore;
 }
 
 /** The prober's tool set: probe quiz (no nodeId) + ask + the learner-fs
@@ -337,7 +342,13 @@ export function createProberTools(
 				// The map reader (wave 7): present only when the settings gate
 				// opened.
 				...(ctx.graphStore
-					? proberGraphTools({ chatStore: ctx.chatStore, graphStore: ctx.graphStore })
+					? {
+							...proberGraphTools({ chatStore: ctx.chatStore, graphStore: ctx.graphStore }),
+							recent_work: recentWorkTool({ chatStore: ctx.chatStore, graphStore: ctx.graphStore }),
+						}
+					: {}),
+				...(ctx.heldStore && ctx.graphStore
+					? { held_state: heldStateTool({ chatStore: ctx.chatStore, graphStore: ctx.graphStore, heldStore: ctx.heldStore }) }
 					: {}),
 				...done,
 			},
@@ -400,6 +411,8 @@ export interface TeacherToolContext extends PlanToolContext {
 	spawn: (job: JobRecord, input: ResearchInput | DemoInput | VisualInput | PdfInput) => void;
 	/** Retained search-status seam; research dispatch is available keylessly. */
 	searchAvailable?: () => boolean;
+	/** recent_work (Phase 4) — same graph gate as the prober's map tools. */
+	graph?: GraphToolContext;
 }
 
 /**
@@ -459,6 +472,7 @@ export function createTeacherTools(
 			grep: grepTool,
 			...planTools(ctx),
 			...jobTools({ chatId: ctx.chatId, jobStore: ctx.jobStore, spawn: ctx.spawn, searchAvailable: ctx.searchAvailable }),
+			...(ctx.graph ? { recent_work: recentWorkTool(ctx.graph) } : {}),
 		},
 		withoutMechanics(enabled),
 		),

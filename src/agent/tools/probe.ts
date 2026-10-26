@@ -3,6 +3,7 @@ import { serverExecute } from "../tool-execute.ts";
 import { probeDoneInputSchema, PROBE_DONE_ACK_TEXT } from "../../core/contracts.ts";
 import { danglingQuestionOf, hasProbeDone, type LhMessage } from "../../core/native-messages.ts";
 import type { ChatStore } from "../../core/ports.ts";
+import type { ProbeAssessment } from "../../core/contracts.ts";
 import { buildProbeHandoffSteer, type SteerMessage } from "../../core/contracts.ts";
 
 /** What the probe_done tool closes over. */
@@ -13,6 +14,8 @@ export interface ProbeDoneContext {
 	/** Queue the handoff steer (the wake pipeline — src/server/jobs.ts).
 	 *  Injected so this module never imports the server seam. */
 	deliver: (steer: SteerMessage) => void;
+	/** Held-state writer (Phase 5) — composition root injects; absent in tests. */
+	onProbeDone?: (assessment: ProbeAssessment) => void;
 }
 
 /** Does the transcript already carry a concluded probe (any state)?
@@ -75,6 +78,11 @@ export function probeDoneTool(ctx: ProbeDoneContext): Record<string, AgentTool<a
 				}
 				if (probeConcluded(record.messages)) {
 					return { ok: false, error: "The probe is already concluded — probe_done fires exactly once." };
+				}
+				try {
+					ctx.onProbeDone?.(input.assessment);
+				} catch (err) {
+					console.error(`[chat ${ctx.chatId}] held-state probe writer failed:`, err);
 				}
 				try {
 					ctx.deliver(buildProbeHandoffSteer(ctx.chatId));

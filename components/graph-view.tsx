@@ -66,8 +66,16 @@
 import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { NotesImportErrors, useNotesImport } from "@/components/notes-import.tsx";
 import Link from "next/link";
-import { FileTextIcon, ListTreeIcon, Loader2Icon, SearchIcon, SettingsIcon, UploadIcon, WaypointsIcon } from "lucide-react";
-import { incrementalLayout, propositionSessionHref, type GraphCostSummary, type GraphNode, type GraphSnapshot } from "@/src/core";
+import { Code2Icon, FileTextIcon, ListTreeIcon, Loader2Icon, SearchIcon, SettingsIcon, UploadIcon, WaypointsIcon } from "lucide-react";
+import {
+	incrementalLayout,
+	propositionSessionHref,
+	workspaceFolderName,
+	type GraphCostSummary,
+	type GraphNode,
+	type GraphSnapshot,
+	type HeldNodeOverlay,
+} from "@/src/core";
 import { planCostLabel } from "@/components/usage-format";
 import { GraphCanvasRenderer, type GraphRenderSettings } from "./graph-canvas.ts";
 import { usePopoverDismiss } from "@/components/popover-dismiss";
@@ -112,6 +120,23 @@ import {
 /** The uniform node look (no state classes — canvas wants hex, not oklch):
  *  the accent color, until the state model lands. */
 const NODE_COLOR_TOKEN = "--primary";
+
+/** Held-state overlay fills (canvas hex). Recurrence uses the same fill as
+ *  the latest outcome — the overlay is outcome-colored, not a second legend. */
+const HELD_OVERLAY_HEX: Record<HeldNodeOverlay["outcome"], string> = {
+	held: "#3d9a5f",
+	fragile: "#c9a227",
+	gap: "#e07a5f",
+	misconception: "#7b5ea7",
+};
+
+function heldOverlayColors(held: Record<string, HeldNodeOverlay>): Record<string, string> {
+	const out: Record<string, string> = {};
+	for (const [id, cell] of Object.entries(held)) {
+		out[id] = HELD_OVERLAY_HEX[cell.outcome];
+	}
+	return out;
+}
 
 /** Per-device graph camera persistence (zoom+pan view state). v1 in the
  *  key: the stored shape is the renderer's d3 transform {k, x, y}. */
@@ -648,6 +673,16 @@ function GraphSettingsControl({
 									type="checkbox"
 									checked={settings.clusterLabels}
 									onChange={(e) => changeSettings((cur) => ({ ...cur, clusterLabels: e.target.checked }))}
+									className="accent-primary"
+								/>
+							</label>
+							<label className="flex cursor-pointer items-center justify-between text-[11px] text-muted-foreground">
+								<span>Held-state overlay</span>
+								<input
+									type="checkbox"
+									data-testid="held-overlay-toggle"
+									checked={settings.heldOverlay}
+									onChange={(e) => changeSettings((cur) => ({ ...cur, heldOverlay: e.target.checked }))}
 									className="accent-primary"
 								/>
 							</label>
@@ -1432,10 +1467,11 @@ export function GraphView({
 				label: tokenHex("--muted-foreground"),
 				hoverText: tokenHex("--foreground"),
 			},
+			overlayColors: settings.heldOverlay && snapshot.held ? heldOverlayColors(snapshot.held) : undefined,
 			// Match the app typography (Geist via the body's stack).
 			fontFamily: getComputedStyle(document.body).fontFamily,
 		});
-	}, [snapshot, isEmpty]);
+	}, [snapshot, isEmpty, settings.heldOverlay]);
 
 	// Feed #2 — settings: just marks the frame dirty. No rebuild, no
 	// re-layout, no camera touch (the whole point of the new renderer).
@@ -1666,6 +1702,19 @@ export function GraphView({
 										</div>
 									);
 								}
+								const cursor = snapshot?.cursorSources?.[sourceId];
+								if (cursor) {
+									const label = workspaceFolderName(cursor.workspace) ?? cursor.title ?? sourceId;
+									return (
+										<div key={sourceId} className="flex items-center gap-1.5">
+											<Code2Icon className="size-3.5 shrink-0 text-muted-foreground" />
+											<span className="min-w-0 flex-1 truncate px-2 py-1.5 text-sm text-muted-foreground">
+												{label}
+												<span className="ml-2 text-[11px] uppercase tracking-widest text-muted-foreground/60">cursor</span>
+											</span>
+										</div>
+									);
+								}
 								// A real session: deep-linkable provenance.
 								return (
 									<div key={sourceId} className="flex items-center gap-1.5">
@@ -1704,6 +1753,7 @@ export function GraphView({
 				chains={snapshot?.chains ?? []}
 				sessions={snapshot?.sessions ?? {}}
 				fileSources={snapshot?.fileSources ?? {}}
+				cursorSources={snapshot?.cursorSources ?? {}}
 				onClose={() => {
 					setChainsOpen(false);
 					onChainSelectClose?.();

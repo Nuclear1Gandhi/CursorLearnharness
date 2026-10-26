@@ -25,6 +25,7 @@ import type {
 	SessionCheckpoint,
 	TurnUsage,
 	NotesSource,
+	HeldEntry,
 } from "./contracts.ts";
 import type { UserSettings } from "./settings.ts";
 
@@ -126,6 +127,18 @@ export interface GraphStore {
 		coverage?: CoverageEntry[];
 		checkpoints?: SessionCheckpoint[];
 	}): void;
+}
+
+// ─── HeldStore — the append-only learner-state ledger (data/held) ───────────
+// Deliberate fork departure: ratings never land on graph nodes. One writer
+// module (src/store/held.ts). Derivation (current state, decay, recurrence)
+// is read-time only (core/held.ts).
+
+export interface HeldStore {
+	/** Append one outcome line. */
+	append(entry: HeldEntry): void;
+	/** Raw lines in append order. */
+	read(): HeldEntry[];
 }
 
 // ─── JobStore — background sub-agent jobs (data/jobs) ─────────────────────────

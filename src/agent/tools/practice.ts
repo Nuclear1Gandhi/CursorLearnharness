@@ -44,6 +44,12 @@ export interface PracticeToolContext {
 	 *  Each absent context (tests) = absent from the registry. */
 	graph?: GraphToolContext;
 	jobs?: JobToolContext;
+	/** Held-state writer (Phase 5) — composition root injects. */
+	onPracticeGrade?: (
+		nodeIds: string[],
+		outcome: ConcludeInput["outcome"],
+		verdict: string,
+	) => void;
 }
 
 /** TURN-SCOPED GATE STATE (the BKT incident, 2026-10-05): the gates used
@@ -196,7 +202,10 @@ export const concludeInputObject = Type.Object({
 
 export type ConcludeInput = Static<typeof concludeInputObject>;
 
-export function concludeTool(gate: PracticeGate): AgentTool<typeof concludeInputObject> {
+export function concludeTool(
+	gate: PracticeGate,
+	ctx?: Pick<PracticeToolContext, "chatId" | "chatStore" | "onPracticeGrade">,
+): AgentTool<typeof concludeInputObject> {
 	return {
 		name: "conclude",
 		label: "conclude",
@@ -209,9 +218,20 @@ export function concludeTool(gate: PracticeGate): AgentTool<typeof concludeInput
 		parameters: concludeInputObject,
 		prepareArguments: (args: unknown) => healEncodedArguments(args, concludeInputObject) as never,
 		executionMode: "sequential",
-		execute: async (_toolCallId, _input) => {
+		execute: async (_toolCallId, input) => {
 			if (!gate.problemActive) {
 				return invalidInputResult("conclude", ["no active problem to conclude — pose one first"]);
+			}
+			if (ctx?.onPracticeGrade) {
+				try {
+					const record = ctx.chatStore.getChat(ctx.chatId);
+					const active = record ? activeProblemOf(record.messages) : null;
+					const target = (active?.input as { target?: unknown } | undefined)?.target;
+					const nodeIds = Array.isArray(target) ? target.filter((t): t is string => typeof t === "string") : [];
+					ctx.onPracticeGrade(nodeIds, input.outcome, input.verdict);
+				} catch (err) {
+					console.error(`[chat ${ctx.chatId}] held-state practice writer failed:`, err);
+				}
 			}
 			gate.problemActive = false;
 			return concludeResult();
@@ -237,7 +257,7 @@ export function practiceTools(ctx: PracticeToolContext): Record<string, AgentToo
 	// inner pass; the double heal is idempotent by construction.
 	return healToolRecord({
 		problem: problemTool(gate, ctx.graphNodes),
-		conclude: concludeTool(gate),
+		conclude: concludeTool(gate, ctx),
 		read: readTool,
 		ls: lsTool,
 		find: findTool,

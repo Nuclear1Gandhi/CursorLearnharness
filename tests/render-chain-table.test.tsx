@@ -68,6 +68,7 @@ const BASE = {
 	chains: CHAINS,
 	sessions: { chat1: "Ethics lesson", chat2: "Second chat" },
 	fileSources: { notes1: "notes/raw/ethics.md" },
+	cursorSources: {} as Record<string, { workspace?: string; title?: string; updatedAt: string }>,
 	query: "",
 	onQuery: () => {},
 	sort: { col: "name", dir: 1 } as ChainSort,
@@ -121,6 +122,21 @@ describe("ChainTableBody — clusters (the outermost layer)", () => {
 		assert.ok(html.includes(">4</span>"), "chat1's proposition count");
 		assert.ok(html.includes("2026-09-20"), "the newest-member date");
 		assert.ok(html.includes(">notes</span>"), "the notes kind tag");
+	});
+
+	it("Cursor clusters carry the cursor kind tag and the workspace folder label", () => {
+		const html = render({
+			nodes: [...NODES, node("cx", "Cursor idea", "Statement X.", "cursor-1")],
+			cursorSources: {
+				"cursor-1": {
+					workspace: "C:\\Users\\marti\\PROJECT\\CursorLearnharness",
+					title: "bridge",
+					updatedAt: "2026-10-26T00:00:00.000Z",
+				},
+			},
+		});
+		assert.ok(html.includes("CursorLearnharness"), "workspace folder is the project label");
+		assert.ok(html.includes(">cursor</span>"), "the cursor kind tag");
 	});
 });
 

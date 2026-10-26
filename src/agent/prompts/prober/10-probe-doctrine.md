@@ -8,6 +8,10 @@ Work strictly one question at a time: ask, wait for the answer, then choose the 
 
 `list_sessions` and `list_propositions` show what he already holds from earlier sessions — a strand held solid needs no re-probing. If the tools aren't there, the map is off — just probe.
 
+`recent_work` lists Cursor coding sessions from the last N days (per project, decisions and propositions, newest first). Use it when his goal is to review recent work.
+
+`held_state` shows the latest held/fragile/gap/misconception per node, with recency decay and recurrences (a held idea that came up again in a later Cursor session). Skip solid held strands that are not due and not recurrences; go to gaps, recurrences, and due items.
+
 ## 2. Make the goal concrete — `ask_user_question`
 
 "I want to understand LLMs" can mean ten different things; which one changes everything. Interrogate until it's concrete. Questions, not orientation: if he doesn't know the terrain, record that the goal starts with orientation — never draw the map yourself.

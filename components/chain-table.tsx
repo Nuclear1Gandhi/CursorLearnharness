@@ -67,7 +67,14 @@ import {
 	SearchIcon,
 	XIcon,
 } from "lucide-react";
-import { chainsForSelection, formatChainLine, fuzzyScore } from "@/src/core";
+import {
+	chainsForSelection,
+	formatChainLine,
+	fuzzyScore,
+	recentCursorNodes,
+	RECENT_WORK_DAYS,
+	workspaceFolderName,
+} from "@/src/core";
 import type { GraphChain, GraphNode } from "@/src/core";
 import { TopBar } from "@/components/top-bar";
 import { DeleteNodeDialog } from "@/components/delete-node-dialog";
@@ -87,7 +94,7 @@ interface ClusterGroup {
 	key: string;
 	birth: string | null;
 	label: string | null;
-	kind: "chat" | "notes" | null;
+	kind: "chat" | "notes" | "cursor" | null;
 	chains: ReturnType<typeof chainsForSelection>;
 	nodeIds: string[];
 	newestCreatedAt: string;
@@ -101,6 +108,9 @@ export function ChainTableBody({
 	chains: storedChains,
 	sessions,
 	fileSources,
+	cursorSources = {},
+	recentCursorOnly = false,
+	onRecentCursorOnly,
 	query,
 	onQuery,
 	sort,
@@ -121,6 +131,10 @@ export function ChainTableBody({
 	chains: GraphChain[];
 	sessions: Record<string, string>;
 	fileSources: Record<string, string>;
+	cursorSources?: Record<string, { workspace?: string; title?: string; updatedAt: string }>;
+	/** PRACTICE SELECT: keep only propositions from recent Cursor sources. */
+	recentCursorOnly?: boolean;
+	onRecentCursorOnly?: (next: boolean) => void;
 	query: string;
 	onQuery: (v: string) => void;
 	sort: ChainSort;
@@ -143,8 +157,12 @@ export function ChainTableBody({
 	selectMode?: boolean;
 	onSelect?: () => void;
 }) {
-	const byId = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
-	const chains = useMemo(() => chainsForSelection(nodes, storedChains), [nodes, storedChains]);
+	const scopedNodes = useMemo(
+		() => (recentCursorOnly ? recentCursorNodes(nodes, cursorSources, RECENT_WORK_DAYS) : nodes),
+		[nodes, cursorSources, recentCursorOnly],
+	);
+	const byId = useMemo(() => new Map(scopedNodes.map((n) => [n.id, n])), [scopedNodes]);
+	const chains = useMemo(() => chainsForSelection(scopedNodes, storedChains), [scopedNodes, storedChains]);
 	const searching = query.trim() !== "";
 
 	// The fuzzy filter: a chain is visible when ANY member matches on
@@ -180,9 +198,24 @@ export function ChainTableBody({
 			const key = birth ?? "\0unlabeled";
 			let group = map.get(key);
 			if (!group) {
-				const label = birth === null ? null : (sessions[birth] ?? fileSources[birth] ?? null);
+				const cursor = birth === null ? undefined : cursorSources[birth];
+				const label =
+					birth === null
+						? null
+						: (sessions[birth] ??
+							(cursor ? (workspaceFolderName(cursor.workspace) ?? cursor.title ?? birth) : undefined) ??
+							fileSources[birth] ??
+							null);
 				const kind =
-					birth === null ? null : sessions[birth] !== undefined ? "chat" : fileSources[birth] !== undefined ? "notes" : null;
+					birth === null
+						? null
+						: sessions[birth] !== undefined
+							? "chat"
+							: cursor
+								? "cursor"
+								: fileSources[birth] !== undefined
+									? "notes"
+									: null;
 				group = { key, birth, label, kind, chains: [], nodeIds: [], newestCreatedAt: "" };
 				map.set(key, group);
 			}
@@ -222,7 +255,7 @@ export function ChainTableBody({
 			);
 		}
 		return list;
-	}, [visibleChains, byId, sessions, fileSources, sort]);
+	}, [visibleChains, byId, sessions, fileSources, cursorSources, sort]);
 
 	// The derived shape under the floating bar (the agents' ACTUAL input).
 	const derived = useMemo(() => {
@@ -246,8 +279,20 @@ export function ChainTableBody({
 			    law: later in the DOM). */}
 			<TopBar>
 				<span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-					{chains.length} {chains.length === 1 ? "chain" : "chains"} · {nodes.length} {nodes.length === 1 ? "node" : "nodes"}
+					{chains.length} {chains.length === 1 ? "chain" : "chains"} · {scopedNodes.length} {scopedNodes.length === 1 ? "node" : "nodes"}
 				</span>
+				{selectMode && Object.keys(cursorSources).length > 0 && (
+					<label className="lh-no-drag flex shrink-0 cursor-pointer items-center gap-1.5 text-[11px] text-muted-foreground">
+						<input
+							type="checkbox"
+							data-testid="recent-cursor-filter"
+							checked={recentCursorOnly}
+							onChange={(e) => onRecentCursorOnly?.(e.target.checked)}
+							className="accent-primary"
+						/>
+						Recent Cursor work
+					</label>
+				)}
 				<div className="relative shrink-0">
 					<SearchIcon className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
 					<input
@@ -357,6 +402,7 @@ export function ChainTableBody({
 								<span className="min-w-0 flex-1 truncate text-sm font-medium">
 									{group.label ?? <span className="text-muted-foreground/60">unlabeled</span>}
 									{group.kind === "notes" && <span className="ml-2 text-[11px] uppercase tracking-widest text-muted-foreground/60">notes</span>}
+									{group.kind === "cursor" && <span className="ml-2 text-[11px] uppercase tracking-widest text-muted-foreground/60">cursor</span>}
 								</span>
 								<span className="w-14 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
 									{group.nodeIds.length}
@@ -599,6 +645,7 @@ export function ChainTableOverlay({
 	chains: storedChains,
 	sessions,
 	fileSources,
+	cursorSources = {},
 	onClose,
 	/** PRACTICE SELECT (owner vision, 2026-10-04): the selection is
 	 *  PERSISTENT and caller-owned — when these props are present the
@@ -615,12 +662,14 @@ export function ChainTableOverlay({
 	chains: GraphChain[];
 	sessions: Record<string, string>;
 	fileSources: Record<string, string>;
+	cursorSources?: Record<string, { workspace?: string; title?: string; updatedAt: string }>;
 	onClose: () => void;
 	selectMode?: boolean;
 	controlledSelection?: ReadonlySet<string>;
 	onSelectionChange?: (next: ReadonlySet<string>) => void;
 }) {
 	const [query, setQuery] = useState("");
+	const [recentCursorOnly, setRecentCursorOnly] = useState(false);
 	const [sort, setSort] = useState<ChainSort>({ col: "name", dir: 1 });
 	const [internalSelection, setInternalSelection] = useState<ReadonlySet<string>>(() => new Set());
 	const [expandedClusters, setExpandedClusters] = useState<ReadonlySet<string>>(() => new Set());
@@ -686,6 +735,9 @@ export function ChainTableOverlay({
 					chains={storedChains}
 					sessions={sessions}
 					fileSources={fileSources}
+					cursorSources={cursorSources}
+					recentCursorOnly={recentCursorOnly}
+					onRecentCursorOnly={setRecentCursorOnly}
 					query={query}
 					onQuery={setQuery}
 					sort={sort}

@@ -102,6 +102,26 @@ export interface NotesSource {
 	/** The run's usage log — same append-only discipline as
 	 *  ChatRecord.extractions, idempotent per startedAt. */
 	extractions?: ExtractionRunUsage[];
+	/** Absent = notes. Cursor conversations share this bookkeeping map. */
+	kind?: "notes" | "cursor";
+	/** Cursor conversation_id (raw, before filesystem sanitizing). */
+	conversationId?: string;
+	/** Workspace root (or the first of workspace_roots) for Cursor sources. */
+	workspace?: string;
+	/** Optional Cursor chat title. */
+	title?: string;
+	/** ISO — last ingest of a Cursor conversation (notes leave this unset). */
+	updatedAt?: string;
+}
+
+/** A Cursor conversation in the sources map — NotesSource with kind "cursor". */
+export type CursorSource = NotesSource & {
+	kind: "cursor";
+	conversationId: string;
+};
+
+export function isCursorSource(source: NotesSource): source is CursorSource {
+	return source.kind === "cursor";
 }
 
 /** What one cluster-naming refresh did — the namer's ClusterRefreshStats,
@@ -331,6 +351,11 @@ export interface GraphSnapshot {
 	 *  graph (the format-agnostic front door): a static provenance entry —
 	 *  the detail card shows the path as plain text, not a link. */
 	fileSources: Record<string, string>;
+	/** Cursor conversation sources: workspace folder + optional title.
+	 *  Absent on snapshots from builds that predate the Cursor door. */
+	cursorSources?: Record<string, { workspace?: string; title?: string; updatedAt: string }>;
+	/** Derived held-state overlay (Phase 5) — never stored on graph nodes. */
+	held?: Record<string, HeldNodeOverlay>;
 	/** nodeId → chatIds that touched the node (click-through provenance). */
 	nodeSessions: Record<string, string[]>;
 	/** Birth-session communities (core/session-clusters.ts: each
@@ -350,6 +375,23 @@ export interface GraphSnapshot {
 export interface Position {
 	x: number;
 	y: number;
+}
+
+/** One derived held-state overlay cell for the canvas (Phase 5). */
+export interface HeldNodeOverlay {
+	outcome: "held" | "fragile" | "gap" | "misconception";
+	recurrence: boolean;
+	due: boolean;
+}
+
+/** Append-only held-state ledger line (data/held/held.jsonl). */
+export interface HeldEntry {
+	nodeId: string;
+	at: string;
+	source: "probe" | "check" | "practice";
+	outcome: "held" | "fragile" | "gap" | "misconception";
+	confidence?: number;
+	words?: string;
 }
 
 /** The auto-title's character cap (owner, 2026-10-06): long enough to

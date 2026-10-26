@@ -58,6 +58,13 @@ describe("sanitizeRenderSettings", () => {
 		assert.equal(s.labelZoom, DEFAULT_RENDER_SETTINGS.labelZoom);
 		assert.equal(s.clusterLabels, DEFAULT_RENDER_SETTINGS.clusterLabels);
 		assert.equal(s.clusterLabelSize, DEFAULT_RENDER_SETTINGS.clusterLabelSize); // old files → 14
+		assert.equal(s.heldOverlay, false);
+	});
+
+	test("heldOverlay defaults off and preserves a boolean", () => {
+		assert.equal(DEFAULT_RENDER_SETTINGS.heldOverlay, false);
+		assert.equal(sanitizeRenderSettings({ sizeUnits: "world", heldOverlay: true }).heldOverlay, true);
+		assert.equal(sanitizeRenderSettings({ sizeUnits: "world", heldOverlay: "yes" }).heldOverlay, false);
 	});
 
 	test("out-of-range values snap to ladder ends; wrong types reset", () => {
@@ -120,6 +127,7 @@ describe("sanitizeRenderSettings", () => {
 			labelSize: 4,
 			clusterLabels: false,
 			clusterLabelSize: 20,
+			heldOverlay: false,
 			regions: DEFAULT_REGION_TUNING,
 			physics: DEFAULT_PHYSICS_TUNING,
 		};
