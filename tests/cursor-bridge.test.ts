@@ -1,6 +1,7 @@
 /**
  * Cursor bridge (Phases 3–5): ingest identity/coverage, inbox debounce,
- * recent_work grouping, practice filter, held-state derivation + writers.
+ * recent_work grouping, practice filter, held-state derivation + writers,
+ * decision ledger, theory-first extractor brief, re-extract coverage.
  * No LLM, no network — faux engines and in-memory stores.
  */
 
@@ -15,6 +16,13 @@ import { createExtractionPipeline } from "../src/agent/subagents/extraction.ts";
 import { createProberTools } from "../src/agent/tools.ts";
 import { recentWork } from "../src/core/recent-work.ts";
 import {
+	appendNewDecisions,
+	clearCursorCoverage,
+	decisionPracticeItems,
+	decisionsFromChains,
+	recordCursorDecisions,
+} from "../src/core/decisions.ts";
+import {
 	cursorSourceId,
 	cursorTurnFingerprint,
 	parseInboxLine,
@@ -23,6 +31,7 @@ import {
 	sanitizeConversationId,
 	workspaceFolderName,
 } from "../src/core/cursor.ts";
+import { CURSOR_CONTEXTUALIZATION, CURSOR_EXTRACTOR_INSTRUCTIONS, CURSOR_PREAMBLE } from "../src/agent/subagents/extraction.ts";
 import {
 	deriveHeldOverlay,
 	isRecurrence,
@@ -36,8 +45,8 @@ import { startCursorInboxWatcher } from "../src/server/cursor-inbox.ts";
 import { recordPracticeGrade, recordProbeHeld, recordTeachCheck } from "../src/server/held-writers.ts";
 import { extraction } from "../src/server/index.ts";
 import { stores } from "../src/server/stores.ts";
-import type { GraphChain, GraphNode, HeldEntry, NotesSource } from "../src/core/contracts.ts";
-import type { ChatStore, GraphStore, HeldStore, JobStore } from "../src/core/ports.ts";
+import type { DecisionRecord, GraphChain, GraphNode, HeldEntry, NotesSource } from "../src/core/contracts.ts";
+import type { ChatStore, DecisionStore, GraphStore, HeldStore, JobStore } from "../src/core/ports.ts";
 
 const originalIngest = extraction.ingestCursor;
 after(() => {
@@ -95,12 +104,34 @@ function memoryGraph(over: {
 			positions.clear();
 			for (const [id, p] of Object.entries(next)) positions.set(id, { x: p.x, y: p.y });
 		},
-		rewriteLedgers: () => {},
+		rewriteLedgers: (next) => {
+			if (next.nodes) {
+				nodes.length = 0;
+				nodes.push(...next.nodes);
+			}
+			if (next.chains) {
+				chains.length = 0;
+				chains.push(...next.chains);
+			}
+			if (next.coverage) {
+				coverage.length = 0;
+				coverage.push(...next.coverage);
+			}
+		},
 	} as GraphStore;
 }
 
 function memoryHeld(): HeldStore & { entries: HeldEntry[] } {
 	const entries: HeldEntry[] = [];
+	return {
+		entries,
+		append: (e) => void entries.push(e),
+		read: () => [...entries],
+	};
+}
+
+function memoryDecisions(): DecisionStore & { entries: DecisionRecord[] } {
+	const entries: DecisionRecord[] = [];
 	return {
 		entries,
 		append: (e) => void entries.push(e),
@@ -451,8 +482,10 @@ describe("recent_work grouping", () => {
 		assert.equal(projects[0]!.sources[0]!.decisions[0]!.conclusionName, "Version column");
 		assert.ok(!projects.some((p) => p.sources.some((s) => s.id === "c-old")));
 		const goal = recentWorkGoal(projects);
+		assert.match(goal, /decisions and architecture/);
 		assert.match(goal, /db/);
 		assert.match(goal, /Optimistic concurrency/);
+		assert.deepEqual(projects[0]!.sources[0]!.ledgerDecisions, []);
 	});
 });
 
@@ -611,5 +644,268 @@ describe("held-state", () => {
 		const out = (await tools.held_state!.execute!("tc", { nodeIds: ["n-gap", "n-held"] })).details as string;
 		assert.match(out, /n-gap: gap/);
 		assert.match(out, /n-held: held \[skip \(solid\)\]/);
+	});
+});
+
+describe("Cursor extractor brief — theory and decisions", () => {
+	it("the Cursor prompt keeps theory/decisions/architecture/tools and leaves out UI how-tos", () => {
+		assert.match(CURSOR_PREAMBLE, /concepts and decisions, not file edits/);
+		assert.match(CURSOR_CONTEXTUALIZATION, /decision is a chain/);
+		assert.match(CURSOR_CONTEXTUALIZATION, /premises are the constraints/);
+		assert.match(CURSOR_CONTEXTUALIZATION, /switch to it/);
+		assert.match(CURSOR_CONTEXTUALIZATION, /Leave out UI widget how-tos/);
+		assert.match(CURSOR_CONTEXTUALIZATION, /CSS and layout/);
+		assert.match(CURSOR_CONTEXTUALIZATION, /how would you render X/);
+		assert.ok(CURSOR_EXTRACTOR_INSTRUCTIONS.includes(CURSOR_CONTEXTUALIZATION));
+		assert.match(CURSOR_EXTRACTOR_INSTRUCTIONS, /theory, decisions, alternatives, architecture/);
+		assert.doesNotMatch(CURSOR_EXTRACTOR_INSTRUCTIONS, /DROP:/);
+	});
+});
+
+describe("decision ledger", () => {
+	it("append-only writer skips a duplicate (sourceId, question, chosen)", () => {
+		const store = memoryDecisions();
+		const record: DecisionRecord = {
+			id: "dec_1",
+			at: "2026-10-26T00:00:00.000Z",
+			project: "PreVision",
+			sourceId: "conv-pv",
+			question: "How should we persist the session?",
+			chosen: "Optimistic concurrency",
+			alternatives: [
+				{
+					option: "Pessimistic locking",
+					strengths: "Prevents conflicts up front",
+					switchWhen: "If write contention is high and lost updates are costly",
+				},
+			],
+			reasons: ["Conflicts are rare."],
+			nodeIds: { chosen: "n1", premises: ["n0"], alternatives: ["n2"] },
+		};
+		assert.equal(appendNewDecisions(store, [record]), 1);
+		assert.equal(appendNewDecisions(store, [{ ...record, id: "dec_2", at: "2026-10-27T00:00:00.000Z" }]), 0);
+		assert.equal(store.entries.length, 1);
+	});
+
+	it("a comparing session writes a decision with the rejected option and switch condition", async () => {
+		const graphStore = memoryGraph();
+		const decisions = memoryDecisions();
+		const pipeline = createExtractionPipeline({
+			chatStore: stores.chatStore,
+			graphStore,
+			decisionStore: decisions,
+			engineFor: (role) => {
+				const faux = createFauxCore({});
+				faux.setResponses([
+					() =>
+						fauxAssistantMessage(
+							[
+								fauxToolCall(
+									role === "extractor" ? "submit_findings" : "submit_review",
+									role === "extractor"
+										? {
+												propositions: [
+													{
+														id: "p_opt",
+														name: "Optimistic concurrency",
+														statement: "Detect write conflicts at commit time rather than locking rows.",
+														aliases: [],
+														messageId: "g1",
+													},
+													{
+														id: "p_pes",
+														name: "Pessimistic locking",
+														statement:
+															"Pessimistic locking is good when contention is high; switch to it if lost updates are costly.",
+														aliases: [],
+														messageId: "g1",
+													},
+													{
+														id: "p_rare",
+														name: "Rare conflicts",
+														statement: "Write conflicts are rare in this workload.",
+														aliases: [],
+														messageId: "g1",
+													},
+												],
+												chains: [{ premises: ["p_rare"], conclusion: "p_opt" }],
+												decisions: [
+													{
+														question: "How should we persist concurrent edits?",
+														chosen: "p_opt",
+														alternatives: [
+															{
+																id: "p_pes",
+																strengths: "Prevents conflicts up front",
+																switchWhen: "If write contention is high and lost updates are costly",
+															},
+														],
+														reasons: ["p_rare"],
+													},
+												],
+											}
+										: { links: [] },
+								),
+							],
+							{ stopReason: "toolUse" },
+						),
+				]);
+				return { model: faux.getModel(), streamFn: faux.streamSimple };
+			},
+		});
+		const stats = await pipeline.ingestCursor({
+			conversationId: "conv-pv",
+			workspace: "C:\\Users\\marti\\PROJECT\\PreVision",
+			title: "locking",
+			turns: [
+				{
+					generationId: "g1",
+					userText: "Lock rows or detect conflicts at commit?",
+					assistantText: "Prefer optimistic concurrency; switch to locks if contention is high.",
+				},
+			],
+		});
+		assert.equal(stats.nodes, 3);
+		assert.equal(stats.chains, 1);
+		assert.equal(decisions.entries.length, 1);
+		const rec = decisions.entries[0]!;
+		assert.equal(rec.project, "PreVision");
+		assert.equal(rec.question, "How should we persist concurrent edits?");
+		assert.equal(rec.chosen, "Optimistic concurrency");
+		assert.equal(rec.alternatives[0]!.option, "Pessimistic locking");
+		assert.match(rec.alternatives[0]!.switchWhen, /contention is high/);
+		assert.ok(rec.nodeIds.chosen?.startsWith("n_"));
+		assert.equal(rec.nodeIds.premises.length, 1);
+
+		const again = await pipeline.ingestCursor({
+			conversationId: "conv-pv",
+			workspace: "C:\\Users\\marti\\PROJECT\\PreVision",
+			turns: [
+				{
+					generationId: "g1",
+					userText: "Lock rows or detect conflicts at commit?",
+					assistantText: "Prefer optimistic concurrency; switch to locks if contention is high.",
+				},
+			],
+		});
+		assert.deepEqual(again, { nodes: 0, chains: 0 });
+		assert.equal(decisions.entries.length, 1, "covered turns do not append a second decision");
+	});
+
+	it("without an explicit decisions field, a new Cursor chain still becomes a ledger line", () => {
+		const store = memoryDecisions();
+		const nodes = [
+			node("n1", "Rare conflicts", [{ chatId: "c1" }]),
+			node("n2", "Optimistic concurrency", [{ chatId: "c1" }]),
+		];
+		const wrote = recordCursorDecisions({
+			store,
+			project: "PreVision",
+			sourceId: "c1",
+			findings: { propositions: [], chains: [] },
+			mapping: new Map(),
+			appendedChains: [{ id: "arg_1", premises: ["n1"], conclusion: "n2" }],
+			nodes,
+			at: "2026-10-26T00:00:00.000Z",
+		});
+		assert.equal(wrote, 1);
+		assert.equal(store.entries[0]!.chosen, "Optimistic concurrency");
+		assert.equal(store.entries[0]!.question, "Why Optimistic concurrency?");
+		assert.deepEqual(store.entries[0]!.nodeIds.premises, ["n1"]);
+		assert.equal(decisionsFromChains([{ id: "arg_1", premises: ["n1"], conclusion: "n2" }], nodes, { project: "p", sourceId: "c1" })[0]!.chosen, "Optimistic concurrency");
+	});
+});
+
+describe("decision practice + recent_work ledger", () => {
+	it("practice items are why / what-if / compare / architecture / theory — not what the code does", () => {
+		const record: DecisionRecord = {
+			id: "dec_pv",
+			at: "2026-10-26T00:00:00.000Z",
+			project: "PreVision",
+			sourceId: "conv-pv",
+			question: "How should we persist concurrent edits?",
+			chosen: "Optimistic concurrency",
+			alternatives: [
+				{
+					option: "Pessimistic locking",
+					strengths: "Prevents conflicts up front",
+					switchWhen: "If write contention is high and lost updates are costly.",
+				},
+			],
+			reasons: ["Write conflicts are rare."],
+			nodeIds: { chosen: "n2", premises: ["n1"], alternatives: ["n3"] },
+		};
+		const items = decisionPracticeItems(record);
+		assert.deepEqual(
+			items.map((i) => i.kind),
+			["why", "what-if", "compare", "architecture", "theory"],
+		);
+		assert.match(items[0]!.statement, /Why did you pick Optimistic concurrency over Pessimistic locking/);
+		assert.match(items[1]!.statement, /write contention is high/i);
+		assert.match(items[2]!.statement, /When is Pessimistic locking the better choice/);
+		assert.match(items[3]!.statement, /Where does the responsibility/);
+		assert.match(items[4]!.statement, /What assumption does/);
+		assert.ok(items.every((i) => !/what does this code do/i.test(i.statement)));
+	});
+
+	it("recent_work joins the ledger and the goal leads with decisions", () => {
+		const now = Date.parse("2026-10-26T12:00:00.000Z");
+		const graphStore = memoryGraph({
+			nodes: [node("n1", "Optimistic concurrency", [{ chatId: "c-new" }])],
+			sources: [
+				{
+					id: "c-new",
+					filePath: "/proj/PreVision",
+					importedAt: "2026-10-20T00:00:00.000Z",
+					kind: "cursor",
+					conversationId: "c-new",
+					workspace: "/proj/PreVision",
+					title: "locking",
+					updatedAt: "2026-10-25T00:00:00.000Z",
+				},
+			],
+		});
+		const decisionStore = memoryDecisions();
+		decisionStore.append({
+			id: "dec_1",
+			at: "2026-10-25T00:00:00.000Z",
+			project: "PreVision",
+			sourceId: "c-new",
+			question: "How should we persist concurrent edits?",
+			chosen: "Optimistic concurrency",
+			alternatives: [
+				{
+					option: "Pessimistic locking",
+					strengths: "Prevents conflicts up front",
+					switchWhen: "If write contention is high",
+				},
+			],
+			reasons: ["Conflicts are rare"],
+			nodeIds: { chosen: "n1", premises: [], alternatives: [] },
+		});
+		const projects = recentWork({ chatStore: emptyChat, graphStore, decisionStore }, 7, now);
+		assert.equal(projects[0]!.project, "PreVision");
+		assert.equal(projects[0]!.sources[0]!.ledgerDecisions[0]!.chosen, "Optimistic concurrency");
+		assert.ok(projects[0]!.sources[0]!.ledgerDecisions[0]!.practice.some((p) => p.kind === "why"));
+		const goal = recentWorkGoal(projects);
+		assert.match(goal, /decisions and architecture from PreVision/);
+		assert.match(goal, /Decisions: Optimistic concurrency/);
+	});
+});
+
+describe("re-extract coverage fingerprints", () => {
+	it("clearCursorCoverage drops only that conversation so the turn extracts again", () => {
+		const graphStore = memoryGraph({
+			coverage: [
+				{ chatId: "conv-pv", fp: "aaa", tokens: 10, foldedAt: "2026-10-25T00:00:00.000Z" },
+				{ chatId: "other", fp: "bbb", tokens: 8, foldedAt: "2026-10-25T00:00:00.000Z" },
+			],
+		});
+		assert.equal(clearCursorCoverage(graphStore, "conv-pv"), 1);
+		assert.deepEqual(
+			graphStore.readCoverage().map((e) => e.chatId),
+			["other"],
+		);
+		assert.equal(clearCursorCoverage(graphStore, "conv-pv"), 0);
 	});
 });

@@ -74,7 +74,7 @@ export function inboxLineToTurn(line: CursorInboxLine): CursorTurn {
 	};
 }
 
-/** Pre-fill text for "Review recent work" — editable before the probe. */
+/** Pre-fill text for "Review recent work" — leads with decisions/architecture. */
 export function recentWorkGoal(
 	projects: ReadonlyArray<{
 		project: string;
@@ -83,17 +83,22 @@ export function recentWorkGoal(
 			title?: string;
 			propositions: ReadonlyArray<{ name: string }>;
 			decisions: ReadonlyArray<{ conclusionName: string }>;
+			ledgerDecisions?: ReadonlyArray<{ question: string; chosen: string }>;
 		}>;
 	}>,
 ): string {
 	const newest = projects[0]?.sources[0];
-	if (!newest) return "Review my recent Cursor work.";
+	if (!newest) return "Review the decisions and architecture from my recent Cursor work.";
+	const ledger = newest.ledgerDecisions ?? [];
+	const decided =
+		ledger.length > 0
+			? ledger.slice(0, 4).map((d) => d.chosen)
+			: newest.decisions.slice(0, 3).map((d) => d.conclusionName);
 	const names = newest.propositions.slice(0, 6).map((p) => p.name);
-	const decided = newest.decisions.slice(0, 3).map((d) => d.conclusionName);
-	const bits: string[] = [`Review what I worked on in ${newest.project}`];
+	const bits: string[] = [`Review the decisions and architecture from ${newest.project}`];
 	if (newest.title) bits[0] += ` (${newest.title})`;
-	if (names.length > 0) bits.push(`Ideas: ${names.join("; ")}`);
 	if (decided.length > 0) bits.push(`Decisions: ${decided.join("; ")}`);
+	if (names.length > 0) bits.push(`Architecture and theory: ${names.join("; ")}`);
 	return bits.join(". ") + ".";
 }
 

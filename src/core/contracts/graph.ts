@@ -19,6 +19,7 @@
 // ─── Knowledge graph (vision §1 — global, cross-session) ────────────────────
 
 import type { CallUsage, ExtractionRunUsage } from "./chat.ts";
+import type { ExtractedDecision } from "./decisions.ts";
 
 /** One relation of the DERIVED view — chains are the stored truth (owner,
  *  2026-09-30: "the graph is a lossy image of what is truly stored"), and
@@ -275,10 +276,13 @@ export interface ExtractedChain {
 	conclusion: string;
 }
 
-/** The extractor's output shape: the raw reasoning chains. */
+/** The extractor's output shape: the raw reasoning chains.
+ *  Cursor submits may also carry `decisions` — written to the side
+ *  ledger after merge; the graph still stores only propositions + chains. */
 export interface SessionFindings {
 	propositions: ExtractedProposition[];
 	chains: ExtractedChain[];
+	decisions?: ExtractedDecision[];
 }
 
 /** One identity verdict: the extractor's local proposition id → the

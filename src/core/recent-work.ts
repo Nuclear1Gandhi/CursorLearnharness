@@ -7,8 +7,11 @@
 import { getGraph } from "./graph.ts";
 import { isCursorSource } from "./contracts/graph.ts";
 import { workspaceFolderName } from "./cursor.ts";
+import { decisionPracticeItems } from "./decisions.ts";
 import type { GraphDeps } from "./graph.ts";
+import type { DecisionRecord, DecisionPracticeItem } from "./contracts/decisions.ts";
 import type { GraphNode } from "./contracts/graph.ts";
+import type { DecisionStore } from "./ports.ts";
 
 export { recentWorkGoal, recentCursorNodes } from "./cursor.ts";
 
@@ -25,6 +28,15 @@ export interface RecentWorkDecision {
 	conclusionName: string;
 }
 
+export interface RecentWorkLedgerDecision {
+	id: string;
+	question: string;
+	chosen: string;
+	alternatives: Array<{ option: string; strengths: string; switchWhen: string }>;
+	reasons: string[];
+	practice: DecisionPracticeItem[];
+}
+
 export interface RecentWorkSource {
 	id: string;
 	title?: string;
@@ -33,6 +45,7 @@ export interface RecentWorkSource {
 	updatedAt: string;
 	propositions: RecentWorkProposition[];
 	decisions: RecentWorkDecision[];
+	ledgerDecisions: RecentWorkLedgerDecision[];
 }
 
 export interface RecentWorkProject {
@@ -48,12 +61,24 @@ function nodesForSource(nodes: ReadonlyArray<GraphNode>, sourceId: string): Grap
 	return nodes.filter((n) => n.provenance.some((pt) => pt.chatId === sourceId));
 }
 
-export function recentWork(deps: GraphDeps, days: number, nowMs: number = Date.now()): RecentWorkProject[] {
+export function recentWork(
+	deps: GraphDeps & { decisionStore?: DecisionStore },
+	days: number,
+	nowMs: number = Date.now(),
+): RecentWorkProject[] {
 	const windowMs = Math.max(0, days) * 86_400_000;
 	const since = nowMs - windowMs;
 	const graph = getGraph(deps.graphStore);
 	const nameOf = new Map(graph.nodes.map((n) => [n.id, n.name]));
 	const cursorSources = deps.graphStore.readSources().filter(isCursorSource);
+	const ledgerBySource = new Map<string, DecisionRecord[]>();
+	if (deps.decisionStore) {
+		for (const record of deps.decisionStore.read()) {
+			const list = ledgerBySource.get(record.sourceId) ?? [];
+			list.push(record);
+			ledgerBySource.set(record.sourceId, list);
+		}
+	}
 	const byProject = new Map<string, RecentWorkSource[]>();
 
 	for (const source of cursorSources) {
@@ -81,6 +106,21 @@ export function recentWork(deps: GraphDeps, days: number, nowMs: number = Date.n
 				.map((n) => ({ id: n.id, name: n.name, statement: n.statement }))
 				.sort((a, b) => (a.id < b.id ? -1 : 1)),
 			decisions,
+			ledgerDecisions: (ledgerBySource.get(source.id) ?? [])
+				.slice()
+				.sort((a, b) => b.at.localeCompare(a.at) || a.id.localeCompare(b.id))
+				.map((d) => ({
+					id: d.id,
+					question: d.question,
+					chosen: d.chosen,
+					alternatives: d.alternatives.map((a) => ({
+						option: a.option,
+						strengths: a.strengths,
+						switchWhen: a.switchWhen,
+					})),
+					reasons: [...d.reasons],
+					practice: decisionPracticeItems(d),
+				})),
 		};
 		const list = byProject.get(project) ?? [];
 		list.push(entry);

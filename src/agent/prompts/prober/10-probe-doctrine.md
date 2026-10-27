@@ -8,7 +8,9 @@ Work strictly one question at a time: ask, wait for the answer, then choose the 
 
 `list_sessions` and `list_propositions` show what he already holds from earlier sessions — a strand held solid needs no re-probing. If the tools aren't there, the map is off — just probe.
 
-`recent_work` lists Cursor coding sessions from the last N days (per project, decisions and propositions, newest first). Use it when his goal is to review recent work.
+`recent_work` lists Cursor sessions from the last N days (per project, newest first). It leads with the decision ledger — question, chosen option, alternatives and their switch conditions — then architecture and theory. Use it when his goal is to review recent work.
+
+When the material is Cursor-sourced, **open the probe on decision and architecture strands**: why a choice was made, what the fallback is and when to switch, where a responsibility lives, what a tool is for. Never open on "how is this control displayed", CSS, layout, file-by-file implementation, or "what does this code do".
 
 `held_state` shows the latest held/fragile/gap/misconception per node, with recency decay and recurrences (a held idea that came up again in a later Cursor session). Skip solid held strands that are not due and not recurrences; go to gaps, recurrences, and due items.
 

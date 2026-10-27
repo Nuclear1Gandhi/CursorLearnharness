@@ -146,6 +146,14 @@ const samePoint = (a: ProvenancePoint, b: ProvenancePoint): boolean =>
  * ("src_…") for the format-agnostic import path. The `source` parameter
  * carries the checkpoint stamp; the merger itself is chat-store-free.
  */
+export interface MergeFindingsResult {
+	stats: EmissionStats;
+	/** Extractor-local proposition id → graph node id for this job. */
+	mapping: Map<string, string>;
+	/** Chains actually appended in this merge (not link-restates). */
+	appendedChains: Array<{ id: string; premises: string[]; conclusion: string }>;
+}
+
 export function mergeFindings(
 	chatId: string,
 	findings: SessionFindings,
@@ -153,8 +161,19 @@ export function mergeFindings(
 	deps: GraphDeps,
 	source: MergeSource,
 ): EmissionStats {
+	return mergeFindingsDetailed(chatId, findings, verdicts, deps, source).stats;
+}
+
+export function mergeFindingsDetailed(
+	chatId: string,
+	findings: SessionFindings,
+	verdicts: AuditVerdicts,
+	deps: GraphDeps,
+	source: MergeSource,
+): MergeFindingsResult {
 	const { graphStore: ledgers } = deps;
 	const stats: EmissionStats = { nodes: 0, chains: 0 };
+	const appendedChains: MergeFindingsResult["appendedChains"] = [];
 
 	// 1. Resolution: THIS job's propositions → graph node ids, built
 	//    in-memory as the propositions resolve (owner, 2026-09-29: the
@@ -252,6 +271,7 @@ export function mergeFindings(
 		idOfKey.set(key, id);
 		assertedByChat.add(key);
 		stats.chains!++;
+		appendedChains.push({ id, premises, conclusion });
 	};
 	for (const chain of findings.chains) emitChain(chain); // the extractor's chains — the one chain source (digest-aware, owner 2026-09-30)
 
@@ -286,7 +306,7 @@ export function mergeFindings(
 	} else {
 		ledgers.appendCheckpoint({ chatId, foldedAt: source.foldedAt });
 	}
-	return stats;
+	return { stats, mapping, appendedChains };
 }
 
 /** The deterministic chain-simplification pass (owner, 2026-09-30

@@ -21,7 +21,7 @@ import { probeDoneTool, type ProbeDoneContext } from "./tools/probe.ts";
 import { proberGraphTools, type GraphToolContext } from "./tools/graph.ts";
 import { recentWorkTool } from "./tools/recent-work.ts";
 import { heldStateTool } from "./tools/held-state.ts";
-import type { HeldStore } from "../core/ports.ts";
+import type { DecisionStore, HeldStore } from "../core/ports.ts";
 import { readTool } from "./tools/read.ts";
 import { lsTool } from "./tools/ls.ts";
 import { findTool } from "./tools/find.ts";
@@ -281,6 +281,8 @@ export interface ProberToolContext extends ProbeDoneContext {
 	graphStore?: GraphStore;
 	/** Held-state ledger (Phase 5) — held_state tool + probe_done writer. */
 	heldStore?: HeldStore;
+	/** Decision ledger — recent_work leads with choices + alternatives. */
+	decisionStore?: DecisionStore;
 }
 
 /** The prober's tool set: probe quiz (no nodeId) + ask + the learner-fs
@@ -344,7 +346,11 @@ export function createProberTools(
 				...(ctx.graphStore
 					? {
 							...proberGraphTools({ chatStore: ctx.chatStore, graphStore: ctx.graphStore }),
-							recent_work: recentWorkTool({ chatStore: ctx.chatStore, graphStore: ctx.graphStore }),
+							recent_work: recentWorkTool({
+								chatStore: ctx.chatStore,
+								graphStore: ctx.graphStore,
+								decisionStore: ctx.decisionStore,
+							}),
 						}
 					: {}),
 				...(ctx.heldStore && ctx.graphStore

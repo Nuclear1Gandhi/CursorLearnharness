@@ -30,6 +30,9 @@ export const PATHS = {
 	/** Held-state ledger (Cursor-bridge fork): append-only learner outcomes,
 	 * never written onto graph nodes. */
 	held: path.join(DATA_ROOT, "held"),
+	/** Decision ledger (Cursor-bridge fork): append-only choices + alternatives.
+	 * Graph stays propositions + chains. */
+	decisions: path.join(DATA_ROOT, "decisions"),
 	/** Debug artifacts (env-gated): data/debug/provider-events/<chatId>.jsonl
 	 * raw provider stream recordings (src/agent/provider-events.ts). */
 	debug: path.join(DATA_ROOT, "debug"),
@@ -49,6 +52,9 @@ export function inboxDir(): string {
 
 /** Append-only held-state ledger (Phase 5). */
 export const HELD_FILE = path.join(PATHS.held, "held.jsonl");
+
+/** Append-only decision ledger — one writer (src/store/decisions.ts). */
+export const DECISIONS_FILE = path.join(PATHS.decisions, "decisions.jsonl");
 
 // ─── Models ────────────────────────────────────────────────────────────────
 // BYOK ALL THE WAY DOWN (owner, 2026-09-22): there are NO factory default

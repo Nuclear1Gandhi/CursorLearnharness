@@ -40,3 +40,31 @@ Add provider keys in the app (or `auth.json` / `.env.local`). Start a session, o
 ## Held-state
 
 Learner outcomes live in `%LH_DATA_DIR%\held\held.jsonl` (append-only). They are never written onto graph nodes. The graph canvas has an optional **Held-state overlay**.
+
+## Decision ledger
+
+Choices from Cursor sessions live in `%LH_DATA_DIR%\decisions\decisions.jsonl` (append-only, one writer). The graph stays propositions and chains. Each line has the project, the question, the chosen option, alternatives (strengths + switch condition), reasons, and graph node ids.
+
+Home has a **Decisions** button next to **Review recent work**. Practice from Cursor sources uses why / what-if / compare / architecture / theory — not "what does this code do".
+
+## Re-extract a UI-heavy conversation (coverage fingerprints)
+
+Ingest is idempotent per turn fingerprint. A conversation already extracted under the old UI-heavy brief will not run again until its coverage lines are dropped.
+
+Conversation id = inbox filename without `.jsonl` (and the Cursor `conversation_id`). Coverage lives in `%LH_DATA_DIR%\graph\coverage.jsonl`; each line's `chatId` is that sanitized conversation id.
+
+**Preferred (LearnHarness running):**
+
+```powershell
+# Example: PreVision Healthcare chat. Get the id from the inbox filename.
+Get-ChildItem "$env:USERPROFILE\LearnHarness\inbox\*.jsonl" | Select-Object Name
+Invoke-RestMethod -Method POST -Uri http://localhost:3000/api/cursor/reingest `
+  -ContentType "application/json" `
+  -Body '{"conversationId":"PASTE_CONVERSATION_ID"}'
+```
+
+That clears only that conversation's fingerprints and re-ingests the inbox file through the theory/decision extractor. Models must be configured (same as any extract). The auditor may link restated ideas to existing nodes.
+
+**Manual:** delete `coverage.jsonl` lines whose `chatId` equals the conversation id, then restart `npm run dev` so the inbox watcher catches up — or POST `/api/cursor/ingest` with the same turns.
+
+Do not delete the whole coverage ledger unless you intend to re-extract every Cursor conversation.

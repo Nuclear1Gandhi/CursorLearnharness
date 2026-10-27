@@ -77,8 +77,9 @@ This tree is a modified LearnHarness. Original: [https://github.com/amosblomqvis
 
 Additions (local `cursor-bridge` branch; nothing pushed):
 
-- **Cursor ingest** — `POST /api/cursor/ingest` and an inbox watcher on `%USERPROFILE%\LearnHarness\inbox` (`LH_INBOX_DIR`). Cursor conversations are a third source kind (`CursorSource`) with their own extractor preamble.
-- **recent_work** — prober/teacher tool plus a home-screen **Review recent work** entry that pre-fills a lesson goal. Practice can filter to recent Cursor propositions.
+- **Cursor ingest** — `POST /api/cursor/ingest` and an inbox watcher on `%USERPROFILE%\LearnHarness\inbox` (`LH_INBOX_DIR`). Cursor conversations are a third source kind (`CursorSource`) with an extractor brief that prefers theory, decisions, alternatives, architecture, and tools.
+- **Decision ledger** — append-only `decisions.jsonl` (question, chosen option, alternatives + switch conditions, reasons, graph node ids). Home **Decisions** view. `POST /api/cursor/reingest` clears coverage fingerprints so a UI-heavy chat can be extracted again.
+- **recent_work** — prober/teacher/practice tool plus a home-screen **Review recent work** entry that pre-fills a goal from decisions and architecture. Practice defaults to why / what-if / compare / architecture / theory.
 - **held-state** — append-only `held.jsonl` ledger (never ratings on graph nodes), `held_state` for the prober, optional canvas overlay.
 
 Local data: set `LH_DATA_DIR` to `%USERPROFILE%\LearnHarness\data`. See [docs/local-setup.md](docs/local-setup.md). The capture hook is documented there; Cursor is only a source.
