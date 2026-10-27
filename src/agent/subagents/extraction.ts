@@ -23,8 +23,9 @@ import type {
 	ExtractionStageUsage,
 	SessionFindings,
 } from "../../core/contracts.ts";
-import { getGraph, mergeFindings, type DerivedGraph, type EmissionStats, type GraphDeps } from "../../core/graph.ts";
-import type { GraphStore } from "../../core/ports.ts";
+import { getGraph, mergeFindings, mergeFindingsDetailed, type DerivedGraph, type EmissionStats, type GraphDeps } from "../../core/graph.ts";
+import type { DecisionStore, GraphStore } from "../../core/ports.ts";
+import { recordCursorDecisions } from "../../core/decisions.ts";
 import { emit } from "../../core/events.ts";
 import { settleGraphLayout } from "../../core/layout-settle.ts";
 import { batchRuns, coverageOf, messageViewLines } from "../../core/coverage.ts";
@@ -34,6 +35,7 @@ import {
 	cursorSourceId,
 	cursorTurnAsMessage,
 	cursorTurnId,
+	workspaceFolderName,
 	type CursorIngestInput,
 } from "../../core/cursor.ts";
 import { auditorGraphTools } from "../tools/graph.ts";
@@ -228,6 +230,33 @@ const sessionPropositionProps = {
 	}),
 };
 
+const extractedDecisionSchema = Type.Object({
+	question: Type.String({
+		description: "The decision question — what was being chosen, in the learner's terms.",
+	}),
+	chosen: Type.String({
+		description:
+			"Local or graph id of the chosen-option proposition (the chain conclusion). Copy the proposition id verbatim.",
+	}),
+	alternatives: Type.Array(
+		Type.Object({
+			id: Type.String({
+				description: "Local or graph id of the alternative proposition.",
+			}),
+			strengths: Type.String({
+				description: "What this option is good for.",
+			}),
+			switchWhen: Type.String({
+				description: "The condition that would make you switch to this option.",
+			}),
+		}),
+		{ description: "Rejected or fallback options, each with strengths and a switch condition. Pass [] when none." },
+	),
+	reasons: Type.Array(Type.String(), {
+		description: "Local or graph ids of the constraint / reason propositions (the chain premises).",
+	}),
+});
+
 const sessionFindingsSchema = Type.Object({
 	propositions: Type.Array(Type.Object(sessionPropositionProps), {
 		description: propositionsDescription,
@@ -235,6 +264,23 @@ const sessionFindingsSchema = Type.Object({
 	chains: Type.Array(chainSchema, {
 		description: chainsDescription,
 	}),
+});
+
+const cursorFindingsSchema = Type.Object({
+	propositions: Type.Array(Type.Object(sessionPropositionProps), {
+		description: propositionsDescription,
+	}),
+	chains: Type.Array(chainSchema, {
+		description: chainsDescription,
+	}),
+	decisions: Type.Optional(
+		Type.Array(extractedDecisionSchema, {
+			description:
+				"Every choice this stretch records — question, chosen option id, alternatives with strengths and " +
+				"switchWhen, reason ids. Pass [] when the stretch records no decision. The graph still stores only " +
+				"propositions and chains; this field fills the decision ledger.",
+		}),
+	),
 });
 
 /** What the extractor SUBMITS (the redesign's wire shape) — propositions
@@ -247,6 +293,7 @@ type FindingsSubmit = Static<typeof findingsSchema>;
 /** The SESSION wire — the notes shape plus the REQUIRED messageId anchor
  *  on every proposition (owner, 2026-10-13). */
 type SessionFindingsSubmit = Static<typeof sessionFindingsSchema>;
+type CursorFindingsSubmit = Static<typeof cursorFindingsSchema>;
 
 // VERDICTS-ONLY (owner, 2026-09-28): the auditor never alters the
 // extractor's findings, so it does not restate them — links are its
@@ -364,10 +411,12 @@ const asSessionFindings = (
 	raw: {
 		propositions: Array<{ id: string; name: string; statement: string; aliases?: string[]; messageId?: string }>;
 		chains: Array<{ premises: string[]; conclusion: string }>;
+		decisions?: SessionFindings["decisions"];
 	},
 ): SessionFindings => ({
 	propositions: raw.propositions.map((p) => ({ ...p, aliases: p.aliases ?? [] })),
 	chains: raw.chains,
+	...(raw.decisions ? { decisions: raw.decisions } : {}),
 });
 
 function fillAudit(raw: Static<typeof auditSchema>): AuditVerdicts {
@@ -413,6 +462,17 @@ export const CURSOR_PREAMBLE =
 	"explanations of concepts, and places the learner was unsure or asked again. Drop implementation chatter " +
 	"and file-specific details that are not knowledge. Nodes must read as concepts and decisions, not file edits.";
 
+export const CURSOR_CONTEXTUALIZATION =
+	"What this source is for: theory, decisions, alternatives, architecture, and tools. Code is kept " +
+	"only when a snippet carries one of those ideas (an API pattern, a key line of an algorithm). " +
+	"A decision is a chain: premises are the constraints and reasons; the conclusion is the choice. " +
+	"An alternative is a proposition stating what that option is good for and the condition that would " +
+	"make you switch to it. Architecture and tool facts are propositions about roles, boundaries, and trade-offs. " +
+	"Also submit each decision in the decisions field (question, chosen option id, alternatives with strengths " +
+	"and switchWhen, reason ids) so the choice stays queryable; pass [] when the stretch records no choice. " +
+	"Leave out UI widget how-tos, CSS and layout, file-by-file implementation, questions of the form " +
+	'"how would you render X", diffs, logs, and API choreography that is not a design choice.';
+
 export const CURSOR_MESSAGE_ID_RULE =
 	"For each new proposition, copy the turn id from that turn's TURN [id] label into messageId.";
 
@@ -452,7 +512,7 @@ arguments. The tool's field descriptions carry the details.`;
 
 export const EXTRACTOR_INSTRUCTIONS = `${SESSION_PREAMBLE}\n\n${EXTRACTION_CORE}\n\n${SESSION_MESSAGE_ID_RULE}`;
 export const NOTES_EXTRACTOR_INSTRUCTIONS = `${NOTES_PREAMBLE}\n\n${EXTRACTION_CORE}`;
-export const CURSOR_EXTRACTOR_INSTRUCTIONS = `${CURSOR_PREAMBLE}\n\n${EXTRACTION_CORE}\n\n${CURSOR_MESSAGE_ID_RULE}`;
+export const CURSOR_EXTRACTOR_INSTRUCTIONS = `${CURSOR_PREAMBLE}\n\n${CURSOR_CONTEXTUALIZATION}\n\n${EXTRACTION_CORE}\n\n${CURSOR_MESSAGE_ID_RULE}`;
 
 // ── the same-source digest (owner, 2026-09-30 evening) ──
 //
@@ -541,12 +601,12 @@ function runCursorExtractor(
 	signal: AbortSignal | undefined,
 	onStep: (usage: Usage, model: string, step: number, finishReason: string, tools: string) => void,
 ): Promise<SessionFindings> {
-	return runSubmitAgent<SessionFindingsSubmit>({
+	return runSubmitAgent<CursorFindingsSubmit>({
 		role: "extractor",
 		chatId: sourceId,
 		toolName: "submit_findings",
 		toolDescription: "Submit the Cursor-session findings.",
-		parameters: sessionFindingsSchema,
+		parameters: cursorFindingsSchema,
 		fill: fillFindings,
 		validate: (value) => validateCursorAnchors(value, batchIds) ?? validateFindingsChains(value, existingIds),
 		systemPrompt: CURSOR_EXTRACTOR_INSTRUCTIONS,
@@ -795,6 +855,9 @@ export interface ExtractionPipelineDeps extends GraphDeps, ExtractionModels {
 	 *  callers wire the live effective settings (extraction-UX redesign,
 	 *  2026-09-24). */
 	getChunkTokens?: () => number;
+	/** Decision ledger (Cursor front door). Absent in tests that only
+	 *  assert graph coverage — then merge still writes propositions + chains. */
+	decisionStore?: DecisionStore;
 }
 
 export interface NotesImportInput {
@@ -851,7 +914,7 @@ export function callUsage(usage: Usage): CallUsage {
 }
 
 export function createExtractionPipeline(deps: ExtractionPipelineDeps): ExtractionPipeline {
-	const { chatStore, graphStore } = deps;
+	const { chatStore, graphStore, decisionStore } = deps;
 	// Stage-engine resolution: a direct test value wins; otherwise the
 	// engineFor chain (role override → slot → nothing, resolved FRESH per
 	// stage call server-side) — the job runner's exact treatment. undefined
@@ -1555,17 +1618,29 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 								const auditResult = await audit(jobKey, id, findings);
 								setPhase(jobKey, "merging", "notes", label, part);
 								const foldedAt = new Date().toISOString();
-								const batchStats = mergeFindings(id, findings, auditResult, { chatStore, graphStore }, {
+								const merged = mergeFindingsDetailed(id, findings, auditResult, { chatStore, graphStore }, {
 									foldedAt,
 									coverage: batch
 										.filter((slot) => slot.tokens > 0)
 										.map((slot) => ({ chatId: id, fp: slot.fp, tokens: slot.tokens, foldedAt })),
 								});
+								if (decisionStore) {
+									recordCursorDecisions({
+										store: decisionStore,
+										project: workspaceFolderName(input.workspace) ?? input.title ?? id,
+										sourceId: id,
+										findings,
+										mapping: merged.mapping,
+										appendedChains: merged.appendedChains,
+										nodes: graphStore.readNodes(),
+										at: foldedAt,
+									});
+								}
 								settleGraphLayout(graphStore);
 								console.info(
-									`[extraction ${jobKey}] merged: ${batchStats.nodes} nodes, ${batchStats.chains ?? 0} chains`,
+									`[extraction ${jobKey}] merged: ${merged.stats.nodes} nodes, ${merged.stats.chains ?? 0} chains`,
 								);
-								return batchStats;
+								return merged.stats;
 							});
 						}),
 					});

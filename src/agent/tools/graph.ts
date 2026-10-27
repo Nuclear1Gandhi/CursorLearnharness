@@ -2,7 +2,7 @@ import { Type } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { serverExecute } from "../tool-execute.ts";
 import { getGraph, graphSessionIndex, graphSessionPropositions } from "../../core/graph.ts";
-import type { ChatStore, GraphStore } from "../../core/ports.ts";
+import type { ChatStore, DecisionStore, GraphStore } from "../../core/ports.ts";
 
 /**
  * THE PROBER'S GRAPH TOOLS (wave 7, owner-locked 2026-09-23): context
@@ -27,6 +27,7 @@ import type { ChatStore, GraphStore } from "../../core/ports.ts";
 export interface GraphToolContext {
 	chatStore: ChatStore;
 	graphStore: GraphStore;
+	decisionStore?: DecisionStore;
 }
 
 const listSessionsInput = Type.Object({});

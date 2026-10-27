@@ -32,7 +32,7 @@ import { healEncodedArguments } from "../../core/argument-heal.ts";
 export function healStringifiedArrays(raw: unknown): unknown {
 	if (typeof raw !== "object" || raw === null) return raw;
 	const out: Record<string, unknown> = { ...(raw as Record<string, unknown>) };
-	for (const key of ["propositions", "chains"]) {
+	for (const key of ["propositions", "chains", "decisions"]) {
 		const v = out[key];
 		if (typeof v !== "string" || v.trim().length === 0) continue;
 		try {

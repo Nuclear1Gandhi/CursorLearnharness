@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CornerDownLeftIcon, DumbbellIcon, HistoryIcon } from "lucide-react";
+import { CornerDownLeftIcon, DumbbellIcon, HistoryIcon, ScaleIcon } from "lucide-react";
 import { GraphView } from "@/components/graph-view";
 import { MinimalHome } from "@/components/minimal-home";
 import { SetupDialog } from "@/components/setup-dialog";
@@ -64,6 +64,18 @@ export function Home({
 	});
 	const [busy, setBusy] = useState(false);
 	const [reviewing, setReviewing] = useState(false);
+	const [decisionsOpen, setDecisionsOpen] = useState(false);
+	const [decisions, setDecisions] = useState<
+		Array<{
+			id: string;
+			project: string;
+			question: string;
+			chosen: string;
+			alternatives: Array<{ option: string; strengths: string; switchWhen: string }>;
+			reasons: string[];
+		}>
+	>([]);
+	const [decisionsLoading, setDecisionsLoading] = useState(false);
 	/* Run end focuses the topic input (owner, 2026-10-01): the hands are on
 	 * the keyboard from the stop. Falling edge only; this surface's only
 	 * dictation target IS this textarea, so no case-split is needed. */
@@ -110,17 +122,31 @@ export function Home({
 		try {
 			const res = await fetch("/api/cursor/recent?days=7");
 			const data = (await res.json()) as { goal?: string };
-			const goal = (data.goal ?? "").trim() || "Review my recent Cursor work.";
+			const goal = (data.goal ?? "").trim() || "Review the decisions and architecture from my recent Cursor work.";
 			topicRef.current = goal;
 			setTopic(goal);
 			topicInputRef.current?.focus();
 		} catch {
-			const fallback = "Review my recent Cursor work.";
+			const fallback = "Review the decisions and architecture from my recent Cursor work.";
 			topicRef.current = fallback;
 			setTopic(fallback);
 			topicInputRef.current?.focus();
 		} finally {
 			setReviewing(false);
+		}
+	};
+
+	const openDecisions = async () => {
+		setDecisionsOpen(true);
+		setDecisionsLoading(true);
+		try {
+			const res = await fetch("/api/cursor/decisions");
+			const data = (await res.json()) as { decisions?: typeof decisions };
+			setDecisions(Array.isArray(data.decisions) ? data.decisions : []);
+		} catch {
+			setDecisions([]);
+		} finally {
+			setDecisionsLoading(false);
 		}
 	};
 
@@ -252,6 +278,15 @@ export function Home({
 									<HistoryIcon aria-hidden="true" className="size-3.5 text-muted-foreground" />
 									Review recent work
 								</button>
+								<button
+									type="button"
+									data-testid="home-decisions"
+									onClick={() => void openDecisions()}
+									className="flex cursor-pointer items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 font-ui text-xs text-foreground transition-colors hover:bg-accent"
+								>
+									<ScaleIcon aria-hidden="true" className="size-3.5 text-muted-foreground" />
+									Decisions
+								</button>
 								{(practiceProps.length > 0 || mode === "practice") && (
 									<NodePickerControl
 										count={practiceProps.length}
@@ -366,6 +401,55 @@ export function Home({
 					// Save only saves: the draft waits in the composer.
 				}}
 				/>
+
+			{decisionsOpen && (
+				<div
+					className="pointer-events-auto absolute inset-0 z-30 flex items-end justify-center bg-background/40 px-4 pb-28"
+					data-testid="decisions-panel"
+				>
+					<div className="max-h-[60vh] w-full max-w-[46rem] overflow-y-auto rounded-2xl border bg-card p-4 shadow-lg">
+						<div className="mb-3 flex items-center justify-between">
+							<h2 className="font-ui text-sm font-medium">Decisions</h2>
+							<button
+								type="button"
+								onClick={() => setDecisionsOpen(false)}
+								className="rounded-sm px-2 py-1 font-ui text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+							>
+								Close
+							</button>
+						</div>
+						{decisionsLoading ? (
+							<p className="font-ui text-xs text-muted-foreground">Loading…</p>
+						) : decisions.length === 0 ? (
+							<p className="font-ui text-xs text-muted-foreground">
+								No decisions in the ledger yet. Ingest a Cursor session that compares options.
+							</p>
+						) : (
+							<ul className="space-y-3">
+								{decisions.map((d) => (
+									<li key={d.id} className="rounded-lg border border-border/70 p-3">
+										<p className="font-ui text-[11px] uppercase tracking-wider text-muted-foreground">{d.project}</p>
+										<p className="mt-1 text-sm text-foreground">{d.question}</p>
+										<p className="mt-1 text-sm">
+											<span className="text-muted-foreground">Chose </span>
+											{d.chosen}
+										</p>
+										{d.alternatives.length > 0 && (
+											<ul className="mt-2 space-y-1 font-ui text-xs text-muted-foreground">
+												{d.alternatives.map((alt) => (
+													<li key={`${d.id}-${alt.option}`}>
+														{alt.option} — {alt.strengths}. Switch when: {alt.switchWhen}
+													</li>
+												))}
+											</ul>
+										)}
+									</li>
+								))}
+							</ul>
+						)}
+					</div>
+				</div>
+			)}
 		</div>
 	);
 }

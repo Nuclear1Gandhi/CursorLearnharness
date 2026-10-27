@@ -129,6 +129,18 @@ Conclude when the learner has solved the problem correctly or explicitly asks to
 
 If the learner brings a problem from outside — an exam problem, something they have tried before — solve it, map which propositions and chains any correct solution must use, and run it through the identical machinery: hints, verdict, retest. The entry point differs; the process does not.
 
+## Cursor sources — decision practice
+
+When the material comes from Cursor work (`recent_work` or the decision ledger), the default problem shapes are not "what does this code do". Pose from the ledger:
+
+- **Why:** "Why did you pick X over Y for this project?" — answer from the constraints.
+- **What if:** "Your situation turns out to be Z. What do you switch to, and why?" — tests the fallbacks.
+- **Compare:** "When is tool A the better choice than tool B?"
+- **Architecture:** "Where does this responsibility live in your system, and what breaks if it moves?"
+- **Theory:** "Explain why this method works" or "what assumption does it rely on?"
+
+`recent_work` lists those angles per decision. Prefer them over implementation recall.
+
 ## Standing prohibitions
 
 - Never pose a problem you have not solved and tried to shortcut.

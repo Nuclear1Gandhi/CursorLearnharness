@@ -3,8 +3,14 @@
  * writer; routes call it through the server barrel.
  */
 
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { inboxDir } from "../../config.ts";
 import type { CursorIngestInput, CursorTurn } from "../core/cursor.ts";
+import { inboxLineToTurn, parseInboxLine, sanitizeConversationId } from "../core/cursor.ts";
+import { clearCursorCoverage, decisionsForProject } from "../core/decisions.ts";
 import { recentWork, recentWorkGoal } from "../core/recent-work.ts";
+import type { EmissionStats } from "../core/contracts.ts";
 import { stores } from "./stores.ts";
 
 function asTurn(raw: unknown): CursorTurn | null {
@@ -43,4 +49,51 @@ export function parseCursorIngestBody(body: unknown): CursorIngestInput | { erro
 export function recentCursorWork(days: number) {
 	const projects = recentWork(stores, days);
 	return { projects, goal: recentWorkGoal(projects) };
+}
+
+export function listCursorDecisions(project?: string) {
+	return { decisions: decisionsForProject(stores.decisionStore.read(), project) };
+}
+
+function readInboxTurns(conversationId: string): CursorIngestInput | { error: string } {
+	const id = sanitizeConversationId(conversationId);
+	const filePath = path.join(inboxDir(), `${id}.jsonl`);
+	let raw: string;
+	try {
+		raw = fs.readFileSync(filePath, "utf-8");
+	} catch {
+		return { error: `inbox file not found: ${id}.jsonl` };
+	}
+	const turns: CursorTurn[] = [];
+	let workspace: string | undefined;
+	let resolved = conversationId;
+	for (const line of raw.split("\n")) {
+		const trimmed = line.trim();
+		if (trimmed.length === 0) continue;
+		const parsed = parseInboxLine(trimmed);
+		if (!parsed) continue;
+		resolved = parsed.conversation_id || resolved;
+		if (!workspace && parsed.workspace_roots?.[0]) workspace = parsed.workspace_roots[0];
+		turns.push(inboxLineToTurn(parsed));
+	}
+	if (turns.length === 0) return { error: "inbox file has no usable turns" };
+	return { conversationId: resolved, workspace, turns };
+}
+
+export function loadInboxIngestInput(conversationId: string): CursorIngestInput | { error: string } {
+	const trimmed = conversationId.trim();
+	if (trimmed.length === 0) return { error: "conversationId is required" };
+	return readInboxTurns(trimmed);
+}
+
+/** Clear coverage fingerprints for a conversation, then ingest the inbox file again. */
+export async function reextractCursorConversation(
+	conversationId: string,
+	ingest: (input: CursorIngestInput) => Promise<EmissionStats>,
+): Promise<{ ok: true; cleared: number; stats: { nodes: number; chains: number } } | { error: string }> {
+	const inbox = loadInboxIngestInput(conversationId);
+	if ("error" in inbox) return inbox;
+	const cleared = clearCursorCoverage(stores.graphStore, inbox.conversationId);
+	const stats = await ingest(inbox);
+	return { ok: true, cleared, stats: { nodes: stats.nodes, chains: stats.chains ?? 0 } };
 }

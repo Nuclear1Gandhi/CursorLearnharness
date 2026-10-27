@@ -449,7 +449,15 @@ export async function handleChatInput(
 							spawn: (job, input) => void jobRunner.runJob(job.id, input),
 							searchAvailable,
 						},
-						...(graphToolsEnabled(effective) ? { graph: { chatStore: stores.chatStore, graphStore: stores.graphStore } } : {}),
+						...(graphToolsEnabled(effective)
+							? {
+									graph: {
+										chatStore: stores.chatStore,
+										graphStore: stores.graphStore,
+										decisionStore: stores.decisionStore,
+									},
+								}
+							: {}),
 						onPracticeGrade: (nodeIds, outcome, verdict) =>
 							recordPracticeGrade(stores.heldStore, nodeIds, outcome, verdict),
 					},
@@ -465,7 +473,15 @@ export async function handleChatInput(
 						// The registry drop's signal (2026-09-20): no live engine
 						// = no research tool in the teacher's registry.
 						searchAvailable,
-						...(graphToolsEnabled(effective) ? { graph: { chatStore: stores.chatStore, graphStore: stores.graphStore } } : {}),
+						...(graphToolsEnabled(effective)
+							? {
+									graph: {
+										chatStore: stores.chatStore,
+										graphStore: stores.graphStore,
+										decisionStore: stores.decisionStore,
+									},
+								}
+							: {}),
 					},
 					agentOpts,
 				)
@@ -484,7 +500,11 @@ export async function handleChatInput(
 						// knowledge graph through tools when the gate opens —
 						// graph master switch AND the agent.graphTools toggle.
 						...(graphToolsEnabled(effective)
-							? { graphStore: stores.graphStore, heldStore: stores.heldStore }
+							? {
+									graphStore: stores.graphStore,
+									heldStore: stores.heldStore,
+									decisionStore: stores.decisionStore,
+								}
 							: {}),
 						onProbeDone: (assessment) => recordProbeHeld(stores.heldStore, stores.graphStore, assessment),
 					},

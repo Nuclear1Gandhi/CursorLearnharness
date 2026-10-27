@@ -148,7 +148,7 @@ const ACTIVITY_LABELS: Record<string, string> = {
 	pdf: "Reading a PDF…",
 	plan_init: "Drawing up the plan…",
 	probe_done: "Concluding the assessment…",
-	recent_work: "Reading recent Cursor work…",
+	recent_work: "Reading recent Cursor decisions…",
 	held_state: "Reading held-state…",
 };
 

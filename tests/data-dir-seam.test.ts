@@ -29,6 +29,7 @@ describe("LH_DATA_DIR seam", () => {
 			assert.equal(PATHS.chats, path.join(dir, "chats"));
 			assert.equal(PATHS.graph, path.join(dir, "graph"));
 			assert.equal(PATHS.held, path.join(dir, "held"));
+			assert.equal(PATHS.decisions, path.join(dir, "decisions"));
 			assert.equal(
 				PATHS.teacherPrompt,
 				path.join(ROOT, "src", "agent", "system-prompt.md"),

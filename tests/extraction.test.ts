@@ -54,6 +54,7 @@ import {
 	SESSION_MESSAGE_ID_RULE,
 	NOTES_PREAMBLE,
 	CURSOR_PREAMBLE,
+	CURSOR_CONTEXTUALIZATION,
 	CURSOR_MESSAGE_ID_RULE,
 	EXTRACTOR_INSTRUCTIONS,
 	NOTES_EXTRACTOR_INSTRUCTIONS,
@@ -1465,6 +1466,7 @@ describe("the extractor redesign (owner, 2026-09-30): chains are the deliverable
 		assert.ok(NOTES_EXTRACTOR_INSTRUCTIONS.startsWith(NOTES_PREAMBLE));
 		assert.ok(NOTES_EXTRACTOR_INSTRUCTIONS.includes(EXTRACTION_CORE), "the notes extractor shares the core by construction");
 		assert.ok(CURSOR_EXTRACTOR_INSTRUCTIONS.startsWith(CURSOR_PREAMBLE));
+		assert.ok(CURSOR_EXTRACTOR_INSTRUCTIONS.includes(CURSOR_CONTEXTUALIZATION));
 		assert.ok(CURSOR_EXTRACTOR_INSTRUCTIONS.includes(EXTRACTION_CORE), "the Cursor extractor shares the core by construction");
 		assert.ok(CURSOR_EXTRACTOR_INSTRUCTIONS.includes(CURSOR_MESSAGE_ID_RULE));
 
@@ -1488,6 +1490,10 @@ describe("the extractor redesign (owner, 2026-09-30): chains are the deliverable
 		assert.match(CURSOR_PREAMBLE, /decision and its reason/);
 		assert.match(CURSOR_PREAMBLE, /not file edits/);
 		assert.match(CURSOR_PREAMBLE, /Drop implementation chatter/);
+		assert.match(CURSOR_CONTEXTUALIZATION, /decision is a chain/);
+		assert.match(CURSOR_CONTEXTUALIZATION, /switch to it/);
+		assert.match(CURSOR_CONTEXTUALIZATION, /Leave out UI widget how-tos/);
+		assert.match(CURSOR_CONTEXTUALIZATION, /how would you render X/);
 
 		// NO RULE ARMOR (owner, 2026-09-30): the defensive lists are CUT
 		// from both contextualizations.

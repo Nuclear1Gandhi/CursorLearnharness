@@ -26,6 +26,7 @@ import type {
 	TurnUsage,
 	NotesSource,
 	HeldEntry,
+	DecisionRecord,
 } from "./contracts.ts";
 import type { UserSettings } from "./settings.ts";
 
@@ -139,6 +140,18 @@ export interface HeldStore {
 	append(entry: HeldEntry): void;
 	/** Raw lines in append order. */
 	read(): HeldEntry[];
+}
+
+// ─── DecisionStore — the append-only decision ledger (data/decisions) ───────
+// Cursor-bridge: one writer module (src/store/decisions.ts). The graph stays
+// propositions + chains; this ledger is the queryable "what else could I use"
+// memory. Same one-writer-per-store rule as held/chats/graph.
+
+export interface DecisionStore {
+	/** Append one decision line. */
+	append(entry: DecisionRecord): void;
+	/** Raw lines in append order. */
+	read(): DecisionRecord[];
 }
 
 // ─── JobStore — background sub-agent jobs (data/jobs) ─────────────────────────
